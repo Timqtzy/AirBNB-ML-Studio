@@ -1,0 +1,1146 @@
+================================================================================
+                    AIRBNB PRICE PREDICTION STUDIO
+                    COMPLETE DOCUMENTATION & REASONING
+================================================================================
+
+Document Version: 1.0
+Last Updated: December 2024
+Application: main.py
+
+================================================================================
+TABLE OF CONTENTS
+================================================================================
+
+1. PROJECT OVERVIEW
+2. ARCHITECTURE DECISIONS
+3. DATA PIPELINE DESIGN
+4. TAB-BY-TAB BREAKDOWN
+5. FEATURE ENGINEERING REASONING
+6. MODEL SELECTION & TRAINING
+7. EVALUATION METRICS
+8. PREDICTION SYSTEM
+9. UI/UX DECISIONS
+10. TECHNICAL IMPLEMENTATION DETAILS
+11. KNOWN LIMITATIONS
+12. FUTURE IMPROVEMENTS
+
+================================================================================
+1. PROJECT OVERVIEW
+================================================================================
+
+PURPOSE:
+--------
+This application is a complete machine learning pipeline for predicting Airbnb
+listing prices. It helps hosts determine optimal pricing and helps analysts
+understand price drivers in the short-term rental market.
+
+TARGET USERS:
+-------------
+- Airbnb hosts wanting to price their listings competitively
+- Data analysts studying rental market dynamics
+- Researchers exploring ML applications in real estate
+- Students learning end-to-end ML pipelines
+
+BUSINESS PROBLEM:
+-----------------
+Setting the right price for an Airbnb listing is challenging because:
+- Overpricing leads to low occupancy and lost revenue
+- Underpricing leaves money on the table
+- Prices should vary by season, location, and amenities
+- New hosts lack historical data to guide decisions
+
+SOLUTION:
+---------
+Train ML models on historical Airbnb data to predict prices based on:
+- Property characteristics (bedrooms, bathrooms, capacity)
+- Location (neighborhood, coordinates)
+- Host attributes (superhost status, verification)
+- Reviews and ratings
+- Amenities and listing quality
+- Seasonal demand patterns
+
+================================================================================
+2. ARCHITECTURE DECISIONS
+================================================================================
+
+WHY STREAMLIT?
+--------------
+Decision: Use Streamlit as the web framework
+Reasoning:
+- Rapid prototyping - Python-native, no frontend knowledge needed
+- Interactive widgets built-in (sliders, dropdowns, file uploaders)
+- Session state management for multi-step workflows
+- Easy deployment options
+- Great for data science applications
+- Real-time updates without page refreshes
+
+Alternative considered: Flask/Django + React
+Why rejected: Much more complex, slower development, overkill for this use case
+
+WHY TABBED INTERFACE?
+---------------------
+Decision: Organize workflow into 8 sequential tabs
+Reasoning:
+- ML pipelines are inherently sequential (data -> clean -> process -> train)
+- Tabs prevent overwhelming users with all options at once
+- Users can track progress through the pipeline
+- Each tab has a clear, focused purpose
+- Prevents accidental skipping of steps
+
+Tab order rationale:
+1. Upload - Must happen first (no data = nothing works)
+2. Cleaning - Raw data needs cleaning before processing
+3. Process - Aggregate and merge data sources
+4. Features - Engineer features from processed data
+5. Models - Select which algorithms to train
+6. Training - Execute the training
+7. Results - Analyze model performance
+8. Predict - Use trained models for predictions
+
+WHY SESSION STATE?
+------------------
+Decision: Store all data in st.session_state
+Reasoning:
+- Streamlit reruns entire script on each interaction
+- Session state persists data between reruns
+- Allows multi-step workflows without losing progress
+- Enables passing data between tabs
+- Stores trained models for later prediction
+
+================================================================================
+3. DATA PIPELINE DESIGN
+================================================================================
+
+SUPPORTED DATA SOURCES:
+-----------------------
+
+1. listings.csv (REQUIRED)
+   - Core property information
+   - Price target variable
+   - Host and review data
+   Why required: Contains the target variable (price) and primary features
+
+2. calendar.csv (RECOMMENDED)
+   - 365 days of prices per listing
+   - Daily availability status
+   Why recommended: Enables seasonal pricing analysis and demand indicators
+
+3. reviews.csv (RECOMMENDED)
+   - Guest review comments
+   - Review dates
+   Why recommended: Sentiment analysis adds predictive power
+
+4. neighbourhoods.csv (OPTIONAL)
+   - Geographic boundary polygons
+   - Neighborhood groupings
+   Why optional: Enhances location features but not essential
+
+WHY ZIP FILE UPLOAD?
+--------------------
+Decision: Accept ZIP files containing CSVs
+Reasoning:
+- Airbnb data typically comes as ZIP archives
+- Multiple files need to be processed together
+- Reduces upload complexity for users
+- Handles nested folder structures automatically
+- Supports multiple dataset combination (e.g., Dec + March data)
+
+MULTIPLE DATASET SUPPORT:
+-------------------------
+Decision: Allow uploading multiple ZIP files that get combined
+Reasoning:
+- More data generally improves model performance
+- Seasonal variation captured better with multiple time periods
+- Users may have data from different cities or time periods
+- Automatic handling prevents manual data merging errors
+
+================================================================================
+4. TAB-BY-TAB BREAKDOWN
+================================================================================
+
+TAB 1: UPLOAD
+-------------
+Purpose: Load data into the application
+
+Features:
+- ZIP file uploader (multiple files supported)
+- Automatic file type detection (listings, calendar, reviews, neighbourhoods)
+- Data preview with shape and column information
+- Column completeness analysis
+- Two expandable documentation sections:
+  a) "Features Used in Model" - Shows what columns the ML model uses
+  b) "Manual Prediction Input Fields" - Shows what users enter for predictions
+
+Why include documentation here?
+- Users need to know what data is required BEFORE uploading
+- Helps users understand if their data is suitable
+- Reduces confusion about sparse columns (explains which matter)
+
+Dataset Description (Section 2.1):
+- Total rows, columns, memory usage
+- Field categorization (numeric, text, date)
+- Data completeness metrics
+
+EDA Section (Section 2.2):
+- Statistical summaries
+- Price distribution visualization
+- Room type distribution
+- Correlation heatmap
+- Price correlation analysis with R² potential warning
+
+Why R² potential warning?
+- Airbnb price prediction is inherently difficult
+- Many price factors are subjective (photo quality, exact location appeal)
+- Setting realistic expectations prevents disappointment
+- Correlation analysis shows predictive limits of available features
+
+Feature Relevance (Section 2.3):
+- Maps features to business problem
+- Shows which recommended columns are present/missing
+- Explains why each feature category matters
+
+Feasible Model Classes (Section 2.4):
+- Lists suitable ML algorithm families
+- Explains pros/cons of each
+- Recommends gradient boosting as typically best
+
+TAB 2: CLEANING
+---------------
+Purpose: Clean and validate raw data
+
+Configurable Options:
+- Remove duplicate listings (ON by default)
+- Clean price formats (ON by default)
+- Clean percentage formats (ON by default)
+- Handle missing values (ON by default)
+- Validate coordinates (ON by default)
+- Validate dates (ON by default)
+- Remove price outliers (ON by default)
+- Normalize text fields (ON by default)
+
+Why all ON by default?
+- Most users want clean data
+- Prevents common data quality issues
+- Can be disabled for advanced users who want control
+
+Outlier Detection Methods:
+1. Percentile (3-97%) - Default
+   - Removes extreme 3% on each end
+   - Simple, robust, works well for most data
+
+2. IQR (1.5x)
+   - Statistical method using interquartile range
+   - Good for normally distributed data
+   - May be too aggressive for skewed price data
+
+3. Z-Score (3σ)
+   - Removes values > 3 standard deviations
+   - Assumes normal distribution
+   - May not work well for log-normal prices
+
+Why Percentile as default?
+- Airbnb prices are right-skewed (few very expensive listings)
+- Percentile is distribution-agnostic
+- 3-97% is conservative enough to keep most legitimate data
+
+Cleaning Logger:
+- Tracks every cleaning operation
+- Records before/after examples
+- Provides statistics for each step
+- Enables audit trail and debugging
+
+Why detailed logging?
+- Transparency in data transformations
+- Helps users understand what changed
+- Debugging when results seem wrong
+- Educational value for learning data cleaning
+
+TAB 3: PROCESS
+--------------
+Purpose: Aggregate and merge data from all sources
+
+Calendar Aggregation:
+- Calculates per-listing statistics from 365 days of data
+- Features created:
+  - cal_price_mean, cal_price_std, cal_price_min, cal_price_max, cal_price_median
+  - cal_price_q25, cal_price_q75 (quartiles)
+  - cal_avail_rate (availability percentage)
+  - price_range, price_iqr, price_volatility
+  - dynamic_pricing (boolean: price varies > $10)
+  - high_demand (boolean: availability < 30%)
+
+Why aggregate calendar data?
+- Raw calendar has ~365 rows per listing (millions of rows total)
+- Need single row per listing for training
+- Aggregates capture pricing behavior patterns
+- Volatility/range indicate dynamic pricing usage
+
+Monthly Price Analysis:
+- Groups calendar by month
+- Calculates seasonal price index
+- Identifies peak and low seasons
+- Handles static pricing detection
+
+Why demand-based seasonal index?
+- Many hosts use static pricing (same price all year)
+- If price variation < 2%, actual prices don't show seasonality
+- BUT availability varies (low in peak season, high in low season)
+- Invert availability to estimate demand-based pricing adjustments
+- Gives users actionable seasonal recommendations even with static-price data
+
+Reviews Aggregation:
+- Sentiment analysis using keyword matching
+- Features created:
+  - review_count, avg_comment_len, avg_comment_words
+  - total_positive, total_negative (keyword counts)
+  - avg_sentiment, sentiment_ratio
+  - days_since_review, has_recent_review
+
+Why keyword-based sentiment?
+- Simple and fast (no ML model needed)
+- Interpretable (users understand positive/negative words)
+- Works well enough for aggregate sentiment
+- No external API dependencies
+
+Positive keywords: great, excellent, amazing, wonderful, perfect, love,
+                   fantastic, beautiful, clean, comfortable, recommend,
+                   awesome, spotless, cozy, friendly, helpful, quiet,
+                   peaceful, convenient, spacious
+
+Negative keywords: bad, terrible, dirty, awful, worst, disappointing,
+                   problem, issue, noisy, uncomfortable, rude, broken,
+                   smell, bugs, cockroach
+
+Neighbourhood Processing:
+- Extracts polygon statistics from geometry
+- Features: centroid, area, perimeter
+- Calculates neighbourhood-level aggregates
+- Listing density per neighbourhood
+
+Merging Strategy:
+- Left join from listings (preserves all listings)
+- Calendar/reviews may not exist for all listings
+- Missing values filled appropriately:
+  - Review scores: median (not 0, which would hurt predictions)
+  - Other numerics: 0 or sensible defaults
+
+TAB 4: FEATURES
+---------------
+Purpose: Engineer predictive features from processed data
+
+Feature Categories Created:
+
+1. BINARY FEATURES
+   - is_superhost (from host_is_superhost: t/f -> 1/0)
+   - host_verified (from host_identity_verified)
+   - instant_book (from instant_bookable)
+   - has_profile_pic (from host_has_profile_pic)
+
+   Why binary encoding?
+   - Original data has 't'/'f' strings
+   - ML models need numeric input
+   - Binary is most appropriate for yes/no features
+
+2. CATEGORICAL ENCODING
+   - room_type_enc (LabelEncoder)
+   - neighbourhood_enc (LabelEncoder)
+   - property_type_enc (LabelEncoder)
+
+   Why LabelEncoder instead of OneHot?
+   - Neighbourhoods can have 50+ unique values
+   - OneHot would create 50+ sparse columns
+   - Tree-based models handle label encoding well
+   - Reduces dimensionality
+
+3. TEXT FEATURES
+   - amenities_count (count of amenities)
+   - desc_length (description character count)
+   - name_length (listing name length)
+   - premium_amenities (count of luxury amenities)
+   - has_luxury (luxury keywords in name)
+
+   Why these text features?
+   - Longer descriptions often indicate more effort/quality
+   - More amenities = more value = higher price
+   - Luxury keywords signal premium positioning
+
+4. RATIO FEATURES
+   - beds_per_bedroom
+   - baths_per_bedroom
+   - capacity_score (accommodates × bedrooms × beds)
+   - space_score (weighted sum of capacity features)
+
+   Why ratios?
+   - Capture efficiency of space usage
+   - 2 beds in 1 bedroom vs 2 beds in 2 bedrooms = different value
+   - Non-linear relationships between size features
+
+5. REVIEW COMPOSITE
+   - review_composite (average of all review scores)
+   - review_min (lowest score - identifies weak points)
+   - review_std (consistency of scores)
+
+   Why composite scores?
+   - Individual scores are correlated
+   - Composite reduces multicollinearity
+   - Min score identifies problematic areas
+
+6. DISTANCE FEATURES
+   - dist_center (distance from city center)
+   - dist_to_neigh_center (distance from neighbourhood centroid)
+   - neigh_density (listings per unit area)
+
+   Why distance?
+   - Central locations command premium prices
+   - Distance captures location value gradient
+
+7. INTERACTION FEATURES (Advanced)
+   - bedrooms_x_location (bedrooms × location_score)
+   - accommodates_x_superhost
+   - bedrooms_x_bathrooms
+   - reviews_x_rating
+   - accommodates_x_instant
+   - roomtype_x_bedrooms
+   - amenities_x_rating
+
+   Why interactions?
+   - Captures non-linear relationships
+   - Large home + good location = extra premium
+   - Superhost + high capacity = extra trust value
+   - These combinations matter more than sum of parts
+
+8. LOCATION CLUSTERING
+   - Uses K-Means on lat/long coordinates
+   - Creates micro-neighborhoods
+   - Features: cluster_avg_rating, cluster_avg_accommodates, etc.
+
+   Why clustering?
+   - Neighborhoods are administrative, not market-based
+   - Clusters represent actual market segments
+   - Captures hyperlocal price patterns
+
+9. ENHANCED TEXT FEATURES
+   - desc_word_count, desc_sentence_count
+   - desc_avg_word_len (quality indicator)
+   - has_detailed_desc (boolean)
+   - Specific amenity flags: has_parking, has_wifi, has_kitchen, etc.
+   - Name analysis: name_has_location, name_has_size, name_has_special
+
+   Why specific amenity flags?
+   - Not all amenities are equal
+   - Parking is high-value in cities
+   - WiFi is expected (absence is negative)
+   - Kitchen enables self-catering
+
+10. POLYNOMIAL FEATURES
+    - Squared terms: accommodates², bedrooms², etc.
+    - Log transforms: log(accommodates), log(bedrooms), etc.
+
+    Why polynomials?
+    - Diminishing returns (4th bedroom worth less than 2nd)
+    - Log captures this non-linearity
+    - Squares help with U-shaped relationships
+
+11. ADDITIONAL RATIOS
+    - guests_per_bed
+    - review_velocity (reviews_per_month × log(total_reviews))
+    - scarcity_score (1 - availability_rate)
+    - quality_score (composite of all review dimensions)
+
+DATA LEAKAGE PREVENTION:
+------------------------
+IMPORTANT: Calendar price features (cal_price_mean, cal_price_std, etc.)
+are EXCLUDED from the final feature list.
+
+Why?
+- These features are derived from the listing's own prices
+- Using price to predict price is circular/leaky
+- Would give artificially high R² that doesn't generalize
+- Model would learn "price ≈ cal_price_mean" which is useless
+
+What's allowed from calendar:
+- cal_avail_rate (availability, not price)
+- high_demand (derived from availability)
+
+TRAIN/TEST SPLIT:
+-----------------
+- Default: 80% train, 20% test
+- Configurable via slider (5-30% test)
+- Random state for reproducibility
+- Stratification not used (continuous target)
+
+FEATURE SCALING:
+----------------
+- StandardScaler (zero mean, unit variance)
+- Fit on training data only
+- Transform applied to test data
+- Only used for models that need it (linear, SVM, neural networks)
+
+TAB 5: MODELS
+-------------
+Purpose: Select which ML algorithms to train
+
+Available Models (15 total):
+
+LINEAR MODELS:
+- Linear Regression (baseline)
+- Ridge Regression (L2 regularization)
+- Lasso Regression (L1 regularization, feature selection)
+- ElasticNet (L1 + L2 combined)
+- Bayesian Ridge (probabilistic linear regression)
+
+Why include linear models?
+- Fast training
+- Interpretable coefficients
+- Good baselines
+- Work well when relationships are linear
+
+TREE-BASED MODELS:
+- Decision Tree (single tree, interpretable)
+- Random Forest (ensemble of trees)
+- Extra Trees (more randomization than RF)
+
+Why tree models?
+- Handle non-linear relationships
+- No scaling needed
+- Feature importance built-in
+- Robust to outliers
+
+BOOSTING MODELS:
+- Gradient Boosting (scikit-learn implementation)
+- AdaBoost (adaptive boosting)
+- XGBoost (if installed)
+- LightGBM (if installed)
+- CatBoost (if installed)
+
+Why boosting emphasis?
+- State-of-the-art for tabular data
+- Win most Kaggle competitions
+- Handle mixed feature types well
+- XGBoost/LightGBM/CatBoost are industry standards
+
+OTHER MODELS:
+- K-Nearest Neighbors (instance-based)
+- Support Vector Regression (kernel methods)
+- Neural Network (MLP)
+
+Quick Selection Buttons:
+- "Select All" - Train everything
+- "Clear All" - Reset selection
+- "Best Only" - LightGBM, XGBoost, CatBoost, Random Forest
+- "Fast Only" - Linear Regression, Decision Tree, Random Forest
+
+Why "Best Only"?
+- Most users want best results
+- These 4 models typically perform best on tabular data
+- Saves training time
+
+Why "Fast Only"?
+- Quick iteration during development
+- Testing pipeline before full training
+- Limited compute resources
+
+TAB 6: TRAINING
+---------------
+Purpose: Train selected models and evaluate performance
+
+Training Process:
+1. Loop through selected models
+2. Create fresh model instance (not reusing fitted models)
+3. Use scaled data for models that need it
+4. Fit on training data
+5. Predict on test data
+6. Calculate metrics
+
+Why fresh model instances?
+- Ensures clean training each time
+- Previous fits don't contaminate new training
+- Uses get_params() to copy hyperparameters
+
+Metrics Calculated:
+- R² (coefficient of determination)
+- MAE (mean absolute error)
+- RMSE (root mean squared error)
+- MAPE (mean absolute percentage error)
+- Prediction Accuracy (100 - MAPE)
+
+Why multiple metrics?
+- R² shows variance explained (relative)
+- MAE shows average error in dollars (interpretable)
+- RMSE penalizes large errors more
+- MAPE/Accuracy is percentage-based (user-friendly)
+
+Model Storage:
+- Trained models saved in session state
+- Includes whether scaling needed
+- Includes performance metrics
+- Enables later prediction
+
+Progress Indicator:
+- Shows current model being trained
+- Progress bar for completion percentage
+- Real-time feedback
+
+TAB 7: RESULTS
+--------------
+Purpose: Analyze and compare model performance
+
+Comparison Table:
+- Sorted by Prediction Accuracy (user's target metric)
+- Shows all metrics for each model
+- Highlights best performer
+
+Metrics Explanation:
+- Helps users understand each metric
+- Prediction Accuracy = 100 - MAPE is emphasized
+- Target: 80-100% accuracy
+
+Visualization:
+- Bar chart of Prediction Accuracy
+- Reference lines at 80% (target) and 100% (perfect)
+- Color gradient (red=bad, green=good)
+
+Best Model Summary:
+- Highlighted with success/warning based on accuracy
+- Balloons animation if accuracy ≥ 80%
+- Encourages users when target achieved
+
+TAB 8: PREDICT
+--------------
+Purpose: Make predictions on new properties
+
+Two Prediction Modes:
+
+1. MANUAL PREDICTION (Enter Property Details)
+   - Users input property characteristics
+   - Sliders and dropdowns for all features
+   - Month selection for seasonal adjustment
+   - Multi-model prediction comparison
+   - Price range recommendations
+
+2. TEST SET PREDICTIONS
+   - Apply model to held-out test data
+   - Actual vs Predicted comparison
+   - Scatter plot visualization
+   - Downloadable CSV
+
+Manual Prediction Features:
+
+Property Details:
+- Room Type (dropdown from trained data)
+- Bedrooms (0-10)
+- Bathrooms (0-5, 0.5 increments)
+- Beds (0-10)
+- Accommodates (1-16 guests)
+- Minimum Nights (1, 2, 3, 4, 5, 7, 14, 30)
+- Neighbourhood (dropdown from trained data)
+- Instant Bookable (Yes/No)
+- Superhost (Yes/No)
+
+Location:
+- Latitude (defaults to data median)
+- Longitude (defaults to data median)
+
+Host & Listing:
+- Host Identity Verified
+- Total Listings by Host
+- Number of Amenities (slider 0-100)
+- Description Length (slider 0-2000)
+- Luxury Keywords (Yes/No)
+
+Review Scores (0-5 scale):
+- Overall Rating
+- Cleanliness
+- Location
+- Value
+- Number of Reviews
+- Reviews per Month
+
+Prediction Settings:
+- Month selection (seasonal pricing)
+- Model selection (multi-select)
+
+Seasonal Adjustment:
+- If monthly data available, applies price index
+- Shows peak/low season indicator
+- Adjusts predictions by month
+- Yearly price chart shows all 12 months
+
+Price Recommendations:
+- Budget-friendly: 85-95% of prediction
+- Competitive: 95-105% of prediction
+- Premium: 110-125% of prediction
+
+Why ranges instead of single price?
+- Markets have variance
+- Hosts can choose strategy
+- Budget = faster bookings
+- Premium = higher margins
+
+Factor Breakdown:
+- Shows what influenced the prediction
+- Positive factors (superhost, good reviews)
+- Negative factors (low reviews, high min nights)
+- Educational for users
+
+Dynamic Model Selection for Test Predictions:
+- Dropdown to select any trained model
+- Shows R² and Prediction Accuracy for each
+- Best model marked with trophy emoji
+- Not hardcoded to single model
+
+================================================================================
+5. FEATURE ENGINEERING REASONING (DETAILED)
+================================================================================
+
+CORE PROPERTY FEATURES:
+-----------------------
+accommodates, bedrooms, beds, bathrooms
+
+Why these are most important:
+- Directly determine capacity/value
+- Strong positive correlation with price
+- Universal across all listings
+- Easy for users to provide
+
+LOCATION FEATURES:
+------------------
+latitude, longitude, neighbourhood_enc, dist_center
+
+Why location matters:
+- Real estate mantra: "location, location, location"
+- Central locations = premium prices
+- Neighborhood reputation affects value
+- Coordinates enable spatial analysis
+
+HOST FEATURES:
+--------------
+is_superhost, host_verified, host_listings_count
+
+Why host matters:
+- Superhost = trust signal = higher prices
+- Verified = reduced risk = higher prices
+- Multiple listings = professional host = potentially better service
+
+REVIEW FEATURES:
+----------------
+review_scores_*, number_of_reviews, reviews_per_month
+
+Why reviews matter:
+- Social proof drives bookings
+- Higher ratings = higher prices justified
+- More reviews = more trust
+- Recency matters (recent reviews more valuable)
+
+CALENDAR FEATURES:
+------------------
+cal_avail_rate, high_demand
+
+Why availability matters:
+- Low availability = high demand = higher prices
+- High availability = need to lower prices
+- Seasonal patterns captured
+
+Note: Price-based calendar features EXCLUDED (leakage)
+
+TEXT FEATURES:
+--------------
+amenities_count, description_length, specific amenities
+
+Why text matters:
+- Amenities directly add value
+- Description quality signals effort
+- Specific amenities (parking, wifi) are high-value
+
+DERIVED FEATURES:
+-----------------
+ratios, interactions, polynomials
+
+Why derived features:
+- Capture non-linear relationships
+- Improve model accuracy
+- Create features models can't derive themselves
+
+================================================================================
+6. MODEL SELECTION & TRAINING (DETAILED)
+================================================================================
+
+MODEL HYPERPARAMETERS:
+
+Linear Regression:
+- No hyperparameters (closed-form solution)
+
+Ridge Regression:
+- alpha=1.0 (regularization strength)
+- Prevents overfitting on correlated features
+
+Lasso Regression:
+- alpha=0.1 (lighter regularization)
+- Performs feature selection
+
+ElasticNet:
+- alpha=0.1, l1_ratio=0.5
+- Combines L1 and L2 benefits
+
+Decision Tree:
+- max_depth=15 (prevent overfitting)
+- random_state=42 (reproducibility)
+
+Random Forest:
+- n_estimators=200 (number of trees)
+- max_depth=15 (tree depth limit)
+- n_jobs=-1 (parallel training)
+
+Gradient Boosting:
+- n_estimators=200
+- max_depth=8 (shallower than RF)
+- learning_rate=0.1
+
+XGBoost:
+- n_estimators=500
+- max_depth=10
+- learning_rate=0.05
+- subsample=0.8 (row sampling)
+- colsample_bytree=0.8 (column sampling)
+
+LightGBM:
+- n_estimators=500
+- max_depth=12
+- learning_rate=0.05
+- num_leaves=50
+- verbose=-1 (suppress output)
+
+CatBoost:
+- iterations=500
+- depth=10
+- learning_rate=0.05
+- verbose=0 (suppress output)
+
+Why these hyperparameters?
+- Balanced between underfitting and overfitting
+- Not heavily tuned (would need cross-validation)
+- Reasonable defaults for most datasets
+- Can be improved with hyperparameter optimization
+
+SCALING DECISIONS:
+------------------
+Models that need scaling: Linear, Ridge, Lasso, ElasticNet, Bayesian Ridge,
+                          KNN, SVR, Neural Network
+
+Models that don't need scaling: Decision Tree, Random Forest, Extra Trees,
+                                 Gradient Boosting, XGBoost, LightGBM,
+                                 CatBoost, AdaBoost, Bagging
+
+Why?
+- Distance-based models (KNN) affected by feature scales
+- Gradient descent (Neural Network) converges faster with scaling
+- Regularization (Ridge/Lasso) affected by scales
+- Tree-based models split on thresholds (scale-invariant)
+
+================================================================================
+7. EVALUATION METRICS (DETAILED)
+================================================================================
+
+R² (Coefficient of Determination):
+----------------------------------
+Formula: 1 - (SS_res / SS_tot)
+Range: -∞ to 1 (usually 0 to 1)
+Interpretation:
+- 1.0 = perfect prediction
+- 0.0 = predicts mean value
+- Negative = worse than predicting mean
+
+Why include:
+- Standard ML metric
+- Shows variance explained
+- Easy to compare models
+
+Limitations:
+- Can be misleading with few features
+- Doesn't show prediction accuracy in real units
+- Can be inflated by data leakage
+
+MAE (Mean Absolute Error):
+--------------------------
+Formula: mean(|actual - predicted|)
+Units: Same as target (dollars)
+Interpretation:
+- Average error in dollars
+- $20 MAE = predictions off by $20 on average
+
+Why include:
+- Interpretable in real units
+- Robust to outliers
+- Easy to explain to non-technical users
+
+RMSE (Root Mean Squared Error):
+-------------------------------
+Formula: sqrt(mean((actual - predicted)²))
+Units: Same as target (dollars)
+Interpretation:
+- Similar to MAE but penalizes large errors more
+- Always ≥ MAE
+
+Why include:
+- Standard regression metric
+- Penalizes outlier predictions
+- Differentiable (useful for optimization)
+
+MAPE (Mean Absolute Percentage Error):
+--------------------------------------
+Formula: mean(|actual - predicted| / actual) × 100
+Units: Percentage
+Interpretation:
+- Average percentage error
+- 15% MAPE = predictions off by 15% on average
+
+Why include:
+- Scale-independent
+- Intuitive percentage interpretation
+- Works across different price ranges
+
+Caution:
+- Undefined when actual = 0
+- Asymmetric (100% error for $50 actual vs $100 predicted)
+- Code excludes zero actual values
+
+Prediction Accuracy:
+--------------------
+Formula: 100 - MAPE
+Units: Percentage
+Interpretation:
+- If MAPE is 15%, accuracy is 85%
+- Target: 80-100%
+
+Why this is primary metric:
+- User requested 80-100% accuracy target
+- Most intuitive for users
+- "85% accurate" is clearer than "15% MAPE"
+
+================================================================================
+8. PREDICTION SYSTEM (DETAILED)
+================================================================================
+
+FEATURE VALUE ESTIMATION:
+-------------------------
+For manual prediction, not all features are user-provided.
+Estimated/default values used:
+
+- property_type_enc: 0 (most common type)
+- has_profile_pic: 1 (assume yes)
+- host_response_rate: 0.9 (90% - reasonable default)
+- host_acceptance_rate: 0.9 (90% - reasonable default)
+- name_length: 50 (typical name length)
+- premium_amenities: 2 (assume some)
+- Calendar features: Estimated from property size
+- Review sentiment: Derived from rating inputs
+- Neighbourhood features: Use location coordinates
+
+Why estimate these?
+- Users don't know their future calendar stats
+- Too many inputs would overwhelm users
+- Reasonable defaults don't significantly affect predictions
+- Focus user input on most impactful features
+
+SEASONAL ADJUSTMENT:
+--------------------
+Process:
+1. Calculate base prediction from model
+2. Look up month's price_index from historical data
+3. Multiply prediction by price_index
+4. Show adjusted price and seasonal context
+
+Example:
+- Base prediction: $100
+- July price_index: 1.15 (peak season)
+- Adjusted prediction: $115
+- User told: "Peak season, prices 15% higher"
+
+Why monthly adjustment?
+- Airbnb prices are highly seasonal
+- Same property worth more in summer
+- Helps hosts plan year-round pricing
+- More accurate predictions per month
+
+MULTI-MODEL AVERAGING:
+----------------------
+- Users can select multiple models
+- Each model makes prediction
+- Average shown alongside individual predictions
+- Ensemble often more robust than single model
+
+Why allow multiple models?
+- Reduces risk of single model error
+- Users can see prediction variance
+- Educational about model differences
+
+================================================================================
+9. UI/UX DECISIONS
+================================================================================
+
+EXPANDERS FOR OPTIONAL CONTENT:
+-------------------------------
+Many sections use st.expander() to hide details
+- Reduces visual clutter
+- Users can drill down if interested
+- Default state chosen based on importance
+
+PROGRESS INDICATORS:
+--------------------
+- st.progress() for multi-step operations
+- st.spinner() for single operations
+- Provides feedback during long operations
+- Prevents users thinking app is frozen
+
+COLOR CODING:
+-------------
+- Success messages: Green (st.success)
+- Warnings: Yellow (st.warning)
+- Errors: Red (st.error)
+- Info: Blue (st.info)
+- Consistent across application
+
+METRICS DISPLAY:
+----------------
+- st.metric() for key numbers
+- Shows delta where applicable
+- Clean, dashboard-style presentation
+
+CHARTS:
+-------
+- Plotly for interactivity
+- Consistent styling
+- Hover information
+- Reference lines for context
+
+DOWNLOADABLE OUTPUTS:
+---------------------
+- Predictions downloadable as CSV
+- Enables further analysis
+- Audit trail for users
+
+================================================================================
+10. TECHNICAL IMPLEMENTATION DETAILS
+================================================================================
+
+ERROR HANDLING:
+---------------
+- Try/except around model training
+- Graceful degradation if model fails
+- User-friendly error messages
+- Logging for debugging
+
+MEMORY MANAGEMENT:
+------------------
+- Large DataFrames copied when needed
+- Session state cleaned when appropriate
+- Not optimized for very large datasets (>1M rows)
+
+DEPENDENCIES:
+-------------
+Required:
+- streamlit
+- pandas
+- numpy
+- scikit-learn
+- plotly
+
+Optional (for best models):
+- xgboost
+- lightgbm
+- catboost
+
+Graceful handling if optional packages missing:
+- HAS_XGB, HAS_LGB, HAS_CAT flags
+- Models simply not available if not installed
+
+================================================================================
+11. KNOWN LIMITATIONS
+================================================================================
+
+DATA SIZE:
+----------
+- Not optimized for very large datasets
+- Calendar data can be memory-intensive
+- Consider sampling for >500k listings
+
+MODEL TUNING:
+-------------
+- Hyperparameters not optimized
+- No cross-validation implemented
+- Production use would need tuning
+
+FEATURE ENGINEERING:
+--------------------
+- Text analysis is basic (keyword matching)
+- No image analysis (listing photos)
+- No temporal features (booking patterns)
+- No external data (events, weather)
+
+PREDICTION ACCURACY:
+--------------------
+- Airbnb pricing is inherently difficult
+- Many subjective factors not captured
+- 80%+ accuracy may not be achievable for all markets
+- R² of 40-60% is realistic
+
+SEASONALITY:
+------------
+- Requires calendar data for monthly analysis
+- Only 12 monthly buckets (no weekly patterns)
+- Doesn't account for special events
+
+================================================================================
+12. FUTURE IMPROVEMENTS
+================================================================================
+
+POTENTIAL ENHANCEMENTS:
+
+1. Hyperparameter Tuning
+   - Grid search or random search
+   - Cross-validation
+   - Bayesian optimization
+
+2. Advanced Text Analysis
+   - NLP models for description quality
+   - Amenity embeddings
+   - Name sentiment analysis
+
+3. Image Analysis
+   - Photo quality scoring
+   - Room detection
+   - Aesthetic analysis
+
+4. Time Series Features
+   - Booking patterns
+   - Price history
+   - Seasonal decomposition
+
+5. External Data
+   - Events calendar
+   - Weather data
+   - Economic indicators
+   - Competitor pricing
+
+6. Model Explainability
+   - SHAP values
+   - Feature importance plots
+   - Prediction explanations
+
+7. AutoML Integration
+   - Automated model selection
+   - Feature engineering
+   - Hyperparameter optimization
+
+8. Deployment
+   - Model serialization
+   - API endpoints
+   - Batch prediction
+   - Scheduled retraining
+
+================================================================================
+END OF DOCUMENTATION
+================================================================================
+
+For questions or issues, refer to the code comments in main.py or
+contact the development team.

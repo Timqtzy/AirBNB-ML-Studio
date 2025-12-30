@@ -1,0 +1,1372 @@
+================================================================================
+                    AIRBNB PRICE PREDICTION - JUPYTER NOTEBOOK CODE
+                    Complete Pipeline from Cleaning to Prediction
+================================================================================
+
+Copy each code block into separate Jupyter notebook cells.
+Run them in order from top to bottom.
+
+================================================================================
+CELL 1: IMPORTS AND SETUP
+================================================================================
+
+```python
+# ============================================================================
+# IMPORTS
+# ============================================================================
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import warnings
+import re
+from datetime import datetime
+
+# Sklearn
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
+from sklearn.cluster import KMeans
+
+# Models
+from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet, BayesianRidge
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import (RandomForestRegressor, GradientBoostingRegressor,
+                              AdaBoostRegressor, ExtraTreesRegressor, BaggingRegressor)
+from sklearn.svm import SVR
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.neural_network import MLPRegressor
+
+# Optional: Advanced boosting libraries
+try:
+    import xgboost as xgb
+    HAS_XGB = True
+    print("✅ XGBoost available")
+except ImportError:
+    HAS_XGB = False
+    print("❌ XGBoost not installed (pip install xgboost)")
+
+try:
+    import lightgbm as lgb
+    HAS_LGB = True
+    print("✅ LightGBM available")
+except ImportError:
+    HAS_LGB = False
+    print("❌ LightGBM not installed (pip install lightgbm)")
+
+try:
+    import catboost as cb
+    HAS_CAT = True
+    print("✅ CatBoost available")
+except ImportError:
+    HAS_CAT = False
+    print("❌ CatBoost not installed (pip install catboost)")
+
+# Settings
+warnings.filterwarnings('ignore')
+pd.set_option('display.max_columns', 50)
+pd.set_option('display.width', 200)
+
+print("\n✅ All imports successful!")
+```
+
+================================================================================
+CELL 2: LOAD DATA
+================================================================================
+
+```python
+# ============================================================================
+# LOAD DATA
+# ============================================================================
+# Update these paths to your CSV file locations
+
+# REQUIRED
+listings = pd.read_csv('listings.csv')
+
+# OPTIONAL (set to None if you don't have these files)
+calendar = pd.read_csv('calendar.csv')  # or None
+reviews = pd.read_csv('reviews.csv')    # or None
+# neighbourhoods = pd.read_csv('neighbourhoods.csv')  # or None
+neighbourhoods = None
+
+# Quick overview
+print("=" * 60)
+print("DATA LOADED")
+print("=" * 60)
+print(f"Listings:       {listings.shape[0]:,} rows × {listings.shape[1]} columns")
+if calendar is not None:
+    print(f"Calendar:       {calendar.shape[0]:,} rows × {calendar.shape[1]} columns")
+if reviews is not None:
+    print(f"Reviews:        {reviews.shape[0]:,} rows × {reviews.shape[1]} columns")
+if neighbourhoods is not None:
+    print(f"Neighbourhoods: {neighbourhoods.shape[0]:,} rows × {neighbourhoods.shape[1]} columns")
+```
+
+================================================================================
+CELL 3: EXPLORE DATA (EDA)
+================================================================================
+
+```python
+# ============================================================================
+# EXPLORATORY DATA ANALYSIS (EDA)
+# ============================================================================
+
+# 3.1 Basic Info
+print("=" * 60)
+print("LISTINGS INFO")
+print("=" * 60)
+print(listings.info())
+
+# 3.2 First few rows
+print("\n" + "=" * 60)
+print("SAMPLE DATA")
+print("=" * 60)
+listings.head()
+```
+
+```python
+# 3.3 Check for key columns
+key_columns = [
+    'id', 'price', 'accommodates', 'bedrooms', 'beds', 'bathrooms',
+    'latitude', 'longitude', 'neighbourhood_cleansed', 'room_type',
+    'property_type', 'host_is_superhost', 'review_scores_rating',
+    'number_of_reviews', 'minimum_nights', 'amenities'
+]
+
+print("KEY COLUMNS CHECK:")
+print("-" * 40)
+for col in key_columns:
+    status = "✅" if col in listings.columns else "❌"
+    print(f"{status} {col}")
+```
+
+```python
+# 3.4 Missing values analysis
+missing = listings.isnull().sum()
+missing_pct = (missing / len(listings) * 100).round(1)
+missing_df = pd.DataFrame({'Missing': missing, 'Percent': missing_pct})
+missing_df = missing_df[missing_df['Missing'] > 0].sort_values('Percent', ascending=False)
+
+print("\nCOLUMNS WITH MISSING VALUES:")
+print("-" * 40)
+print(missing_df.head(20))
+```
+
+```python
+# 3.5 Price distribution (before cleaning)
+if 'price' in listings.columns:
+    # Clean price for visualization
+    price_clean = listings['price'].astype(str).replace(r'[\$,]', '', regex=True)
+    price_clean = pd.to_numeric(price_clean, errors='coerce')
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Histogram
+    axes[0].hist(price_clean.dropna(), bins=50, edgecolor='black')
+    axes[0].set_title('Price Distribution (Raw)')
+    axes[0].set_xlabel('Price ($)')
+    axes[0].set_ylabel('Count')
+
+    # Box plot
+    axes[1].boxplot(price_clean.dropna())
+    axes[1].set_title('Price Box Plot')
+    axes[1].set_ylabel('Price ($)')
+
+    plt.tight_layout()
+    plt.show()
+
+    print(f"\nPrice Statistics (Raw):")
+    print(price_clean.describe())
+```
+
+================================================================================
+CELL 4: DATA CLEANING
+================================================================================
+
+```python
+# ============================================================================
+# DATA CLEANING
+# ============================================================================
+
+print("=" * 60)
+print("STARTING DATA CLEANING")
+print("=" * 60)
+
+original_rows = len(listings)
+print(f"Original rows: {original_rows:,}")
+
+# 4.1 Clean Price Column
+print("\n[1/6] Cleaning price column...")
+if 'price' in listings.columns:
+    # Remove $ and , then convert to numeric
+    listings['price_clean'] = listings['price'].astype(str).replace(r'[\$,]', '', regex=True)
+    listings['price_clean'] = pd.to_numeric(listings['price_clean'], errors='coerce')
+
+    valid_prices = listings['price_clean'].notna().sum()
+    print(f"      Valid prices: {valid_prices:,} / {len(listings):,}")
+```
+
+```python
+# 4.2 Clean Percentage Columns
+print("\n[2/6] Cleaning percentage columns...")
+pct_columns = ['host_response_rate', 'host_acceptance_rate']
+
+for col in pct_columns:
+    if col in listings.columns:
+        listings[col] = listings[col].astype(str).replace(r'[%]', '', regex=True)
+        listings[col] = pd.to_numeric(listings[col], errors='coerce') / 100
+        print(f"      {col}: cleaned")
+```
+
+```python
+# 4.3 Remove Duplicates
+print("\n[3/6] Removing duplicates...")
+dup_cols = ['name', 'latitude', 'longitude', 'host_id']
+dup_cols = [c for c in dup_cols if c in listings.columns]
+
+if len(dup_cols) >= 2:
+    before = len(listings)
+    listings = listings.drop_duplicates(subset=dup_cols, keep='first')
+    removed = before - len(listings)
+    print(f"      Removed {removed:,} duplicates")
+```
+
+```python
+# 4.4 Handle Missing Values
+print("\n[4/6] Handling missing values...")
+
+# Numeric columns - fill with median
+numeric_cols = ['bathrooms', 'bedrooms', 'beds', 'accommodates',
+                'review_scores_rating', 'review_scores_cleanliness',
+                'review_scores_location', 'review_scores_value',
+                'host_response_rate', 'host_acceptance_rate']
+
+for col in numeric_cols:
+    if col in listings.columns:
+        missing_count = listings[col].isna().sum()
+        if missing_count > 0:
+            median_val = listings[col].median()
+            listings[col] = listings[col].fillna(median_val)
+            print(f"      {col}: filled {missing_count:,} with median ({median_val:.2f})")
+
+# Default values for specific columns
+defaults = {
+    'host_listings_count': 1,
+    'reviews_per_month': 0,
+    'minimum_nights': 1,
+    'number_of_reviews': 0
+}
+
+for col, default in defaults.items():
+    if col in listings.columns:
+        filled = listings[col].isna().sum()
+        if filled > 0:
+            listings[col] = listings[col].fillna(default)
+            print(f"      {col}: filled {filled:,} with default ({default})")
+```
+
+```python
+# 4.5 Remove Price Outliers
+print("\n[5/6] Removing price outliers...")
+
+if 'price_clean' in listings.columns:
+    before = len(listings)
+
+    # Remove invalid prices (null, zero, negative)
+    listings = listings[listings['price_clean'].notna()]
+    listings = listings[listings['price_clean'] > 0]
+
+    # Percentile-based outlier removal (3rd to 97th percentile)
+    lower_bound = listings['price_clean'].quantile(0.03)
+    upper_bound = listings['price_clean'].quantile(0.97)
+
+    listings = listings[(listings['price_clean'] >= lower_bound) &
+                        (listings['price_clean'] <= upper_bound)]
+
+    removed = before - len(listings)
+    print(f"      Price range: ${lower_bound:.2f} - ${upper_bound:.2f}")
+    print(f"      Removed {removed:,} outliers")
+```
+
+```python
+# 4.6 Validate Coordinates
+print("\n[6/6] Validating coordinates...")
+
+if 'latitude' in listings.columns and 'longitude' in listings.columns:
+    before = len(listings)
+
+    # Valid coordinate ranges
+    valid_lat = (listings['latitude'] >= -90) & (listings['latitude'] <= 90)
+    valid_lon = (listings['longitude'] >= -180) & (listings['longitude'] <= 180)
+
+    listings = listings[valid_lat & valid_lon]
+    removed = before - len(listings)
+    print(f"      Removed {removed:,} invalid coordinates")
+
+# Final summary
+print("\n" + "=" * 60)
+print("CLEANING SUMMARY")
+print("=" * 60)
+print(f"Original rows:  {original_rows:,}")
+print(f"Final rows:     {len(listings):,}")
+print(f"Rows removed:   {original_rows - len(listings):,} ({(original_rows - len(listings))/original_rows*100:.1f}%)")
+```
+
+================================================================================
+CELL 5: CLEAN CALENDAR DATA (Optional)
+================================================================================
+
+```python
+# ============================================================================
+# CALENDAR DATA CLEANING (Skip if no calendar data)
+# ============================================================================
+
+if calendar is not None:
+    print("=" * 60)
+    print("CLEANING CALENDAR DATA")
+    print("=" * 60)
+
+    original_cal = len(calendar)
+
+    # Clean price
+    if 'price' in calendar.columns:
+        calendar['price_cal'] = calendar['price'].astype(str).replace(r'[\$,]', '', regex=True)
+        calendar['price_cal'] = pd.to_numeric(calendar['price_cal'], errors='coerce')
+
+        # Remove invalid prices
+        calendar = calendar[calendar['price_cal'].notna()]
+        calendar = calendar[(calendar['price_cal'] > 0) & (calendar['price_cal'] < 5000)]
+
+    # Convert availability
+    if 'available' in calendar.columns:
+        calendar['is_available'] = (calendar['available'] == 't').astype(int)
+
+    print(f"Original rows: {original_cal:,}")
+    print(f"Final rows:    {len(calendar):,}")
+else:
+    print("⚠️ No calendar data - skipping")
+```
+
+================================================================================
+CELL 6: CLEAN REVIEWS DATA (Optional)
+================================================================================
+
+```python
+# ============================================================================
+# REVIEWS DATA CLEANING (Skip if no reviews data)
+# ============================================================================
+
+if reviews is not None:
+    print("=" * 60)
+    print("CLEANING REVIEWS DATA")
+    print("=" * 60)
+
+    original_rev = len(reviews)
+
+    # Remove duplicates
+    if 'id' in reviews.columns:
+        reviews = reviews.drop_duplicates(subset=['id'])
+
+    # Clean comments
+    if 'comments' in reviews.columns:
+        reviews['comments'] = reviews['comments'].fillna('')
+        reviews['comment_length'] = reviews['comments'].str.len()
+
+    print(f"Original rows: {original_rev:,}")
+    print(f"Final rows:    {len(reviews):,}")
+else:
+    print("⚠️ No reviews data - skipping")
+```
+
+================================================================================
+CELL 7: AGGREGATE CALENDAR DATA
+================================================================================
+
+```python
+# ============================================================================
+# AGGREGATE CALENDAR DATA (per listing statistics)
+# ============================================================================
+
+if calendar is not None and 'price_cal' in calendar.columns:
+    print("=" * 60)
+    print("AGGREGATING CALENDAR DATA")
+    print("=" * 60)
+
+    # Aggregate by listing_id
+    cal_agg = calendar.groupby('listing_id').agg({
+        'price_cal': ['mean', 'std', 'min', 'max', 'median'],
+        'is_available': 'mean'
+    }).reset_index()
+
+    # Flatten column names
+    cal_agg.columns = ['listing_id', 'cal_price_mean', 'cal_price_std',
+                       'cal_price_min', 'cal_price_max', 'cal_price_median',
+                       'cal_availability_rate']
+
+    # Fill NaN std with 0
+    cal_agg['cal_price_std'] = cal_agg['cal_price_std'].fillna(0)
+
+    # Create derived features
+    cal_agg['price_range'] = cal_agg['cal_price_max'] - cal_agg['cal_price_min']
+    cal_agg['price_volatility'] = cal_agg['cal_price_std'] / cal_agg['cal_price_mean'].replace(0, 1)
+    cal_agg['uses_dynamic_pricing'] = (cal_agg['price_range'] > 10).astype(int)
+    cal_agg['high_demand'] = (cal_agg['cal_availability_rate'] < 0.3).astype(int)
+
+    print(f"Created aggregations for {len(cal_agg):,} listings")
+    print(f"Features: {list(cal_agg.columns)}")
+
+    cal_agg.head()
+else:
+    cal_agg = None
+    print("⚠️ No calendar data to aggregate")
+```
+
+================================================================================
+CELL 8: AGGREGATE REVIEWS DATA (Sentiment Analysis)
+================================================================================
+
+```python
+# ============================================================================
+# AGGREGATE REVIEWS DATA (Sentiment Analysis)
+# ============================================================================
+
+if reviews is not None and 'comments' in reviews.columns:
+    print("=" * 60)
+    print("AGGREGATING REVIEWS DATA (Sentiment)")
+    print("=" * 60)
+
+    # Sentiment keywords
+    positive_words = ['great', 'excellent', 'amazing', 'wonderful', 'perfect',
+                      'love', 'fantastic', 'beautiful', 'clean', 'comfortable',
+                      'recommend', 'awesome', 'spotless', 'cozy', 'friendly',
+                      'helpful', 'quiet', 'peaceful', 'convenient', 'spacious']
+
+    negative_words = ['bad', 'terrible', 'dirty', 'awful', 'worst',
+                      'disappointing', 'problem', 'issue', 'noisy', 'uncomfortable',
+                      'rude', 'broken', 'smell', 'bugs', 'cockroach']
+
+    # Count sentiment words
+    reviews['comment_words'] = reviews['comments'].str.split().str.len()
+    reviews['positive'] = reviews['comments'].str.lower().apply(
+        lambda x: sum(1 for w in positive_words if w in str(x)))
+    reviews['negative'] = reviews['comments'].str.lower().apply(
+        lambda x: sum(1 for w in negative_words if w in str(x)))
+    reviews['sentiment'] = reviews['positive'] - reviews['negative']
+
+    # Aggregate by listing_id
+    review_agg = reviews.groupby('listing_id').agg({
+        'id': 'count',
+        'comment_length': 'mean',
+        'comment_words': 'mean',
+        'positive': 'sum',
+        'negative': 'sum',
+        'sentiment': 'mean',
+        'date': 'max'
+    }).reset_index()
+
+    review_agg.columns = ['listing_id', 'review_count', 'avg_comment_length',
+                          'avg_comment_words', 'total_positive', 'total_negative',
+                          'avg_sentiment', 'last_review_date']
+
+    # Derived features
+    review_agg['sentiment_ratio'] = review_agg['total_positive'] / (review_agg['total_negative'] + 1)
+    review_agg['last_review_date'] = pd.to_datetime(review_agg['last_review_date'], errors='coerce')
+    review_agg['days_since_review'] = (pd.Timestamp.now() - review_agg['last_review_date']).dt.days
+    review_agg['days_since_review'] = review_agg['days_since_review'].fillna(9999)
+    review_agg['has_recent_reviews'] = (review_agg['days_since_review'] < 60).astype(int)
+
+    print(f"Created aggregations for {len(review_agg):,} listings")
+    print(f"Features: {list(review_agg.columns)}")
+
+    review_agg.head()
+else:
+    review_agg = None
+    print("⚠️ No reviews data to aggregate")
+```
+
+================================================================================
+CELL 9: MERGE ALL DATA
+================================================================================
+
+```python
+# ============================================================================
+# MERGE ALL DATA INTO SINGLE DATAFRAME
+# ============================================================================
+
+print("=" * 60)
+print("MERGING ALL DATA")
+print("=" * 60)
+
+# Start with listings
+df = listings.copy()
+print(f"Starting with {len(df):,} listings")
+
+# Merge calendar aggregations
+if cal_agg is not None:
+    df = df.merge(cal_agg, left_on='id', right_on='listing_id', how='left')
+    print(f"+ Calendar data merged")
+
+# Merge review aggregations
+if review_agg is not None:
+    df = df.merge(review_agg, left_on='id', right_on='listing_id',
+                  how='left', suffixes=('', '_rev'))
+    print(f"+ Reviews data merged")
+
+# Fill remaining NaN values
+# For review scores, use median (not 0)
+review_cols = [c for c in df.columns if 'review' in c.lower() or 'rating' in c.lower()]
+for col in review_cols:
+    if df[col].dtype in ['float64', 'int64'] and df[col].isnull().sum() > 0:
+        df[col] = df[col].fillna(df[col].median())
+
+# For other numeric columns, use 0
+for col in df.columns:
+    if df[col].dtype in ['float64', 'int64'] and df[col].isnull().sum() > 0:
+        df[col] = df[col].fillna(0)
+
+# Ensure valid price
+df = df[df['price_clean'] > 0]
+
+print(f"\nFinal merged dataset: {len(df):,} rows × {len(df.columns)} columns")
+```
+
+================================================================================
+CELL 10: FEATURE ENGINEERING
+================================================================================
+
+```python
+# ============================================================================
+# FEATURE ENGINEERING
+# ============================================================================
+
+print("=" * 60)
+print("FEATURE ENGINEERING")
+print("=" * 60)
+
+# 10.1 Binary Features
+print("\n[1/8] Creating binary features...")
+binary_mappings = {
+    'host_is_superhost': 'is_superhost',
+    'host_identity_verified': 'host_verified',
+    'instant_bookable': 'instant_book',
+    'host_has_profile_pic': 'has_profile_pic'
+}
+
+for old_col, new_col in binary_mappings.items():
+    if old_col in df.columns:
+        df[new_col] = df[old_col].map({'t': 1, 'f': 0, True: 1, False: 0}).fillna(0)
+        print(f"      {new_col} created")
+```
+
+```python
+# 10.2 Categorical Encoding
+print("\n[2/8] Encoding categorical features...")
+
+# Room type
+le_room = LabelEncoder()
+if 'room_type' in df.columns:
+    df['room_type_enc'] = le_room.fit_transform(df['room_type'].fillna('Unknown'))
+    print(f"      room_type_enc: {len(le_room.classes_)} categories")
+
+# Neighbourhood
+le_neigh = LabelEncoder()
+if 'neighbourhood_cleansed' in df.columns:
+    df['neighbourhood_enc'] = le_neigh.fit_transform(df['neighbourhood_cleansed'].fillna('Unknown'))
+    print(f"      neighbourhood_enc: {len(le_neigh.classes_)} categories")
+
+# Property type
+le_prop = LabelEncoder()
+if 'property_type' in df.columns:
+    df['property_type_enc'] = le_prop.fit_transform(df['property_type'].fillna('Unknown'))
+    print(f"      property_type_enc: {len(le_prop.classes_)} categories")
+```
+
+```python
+# 10.3 Text Features
+print("\n[3/8] Creating text features...")
+
+# Amenities count
+if 'amenities' in df.columns:
+    df['amenities_count'] = df['amenities'].fillna('[]').str.count(',') + 1
+    print("      amenities_count created")
+
+# Description length
+if 'description' in df.columns:
+    df['description_length'] = df['description'].fillna('').str.len()
+    print("      description_length created")
+
+# Luxury keywords in name
+if 'name' in df.columns:
+    luxury_words = ['luxury', 'premium', 'waterfront', 'ocean', 'beach',
+                    'view', 'lake', 'private', 'penthouse', 'modern']
+    df['has_luxury'] = df['name'].fillna('').str.lower().str.contains('|'.join(luxury_words)).astype(int)
+    print("      has_luxury created")
+```
+
+```python
+# 10.4 Ratio Features
+print("\n[4/8] Creating ratio features...")
+
+# Safe division helper
+def safe_divide(a, b, default=0):
+    return np.where(b != 0, a / b, default)
+
+if 'beds' in df.columns and 'bedrooms' in df.columns:
+    df['beds_per_bedroom'] = safe_divide(df['beds'], df['bedrooms'], df['beds'])
+    print("      beds_per_bedroom created")
+
+if 'bathrooms' in df.columns and 'bedrooms' in df.columns:
+    df['bathrooms_per_bedroom'] = safe_divide(df['bathrooms'], df['bedrooms'], df['bathrooms'])
+    print("      bathrooms_per_bedroom created")
+
+if 'accommodates' in df.columns and 'bedrooms' in df.columns and 'beds' in df.columns:
+    df['capacity_score'] = df['accommodates'] * df['bedrooms'].replace(0, 1) * df['beds'].replace(0, 1)
+    print("      capacity_score created")
+```
+
+```python
+# 10.5 Review Composite
+print("\n[5/8] Creating review composite...")
+
+review_score_cols = ['review_scores_rating', 'review_scores_cleanliness',
+                     'review_scores_location', 'review_scores_value']
+available_review_cols = [c for c in review_score_cols if c in df.columns]
+
+if available_review_cols:
+    # Normalize review scores (handle both 0-5 and 0-100 scales)
+    for col in available_review_cols:
+        if df[col].max() > 10:  # It's on 0-100 scale
+            df[col] = df[col] / 20  # Convert to 0-5
+            print(f"      Normalized {col} to 0-5 scale")
+
+    df['review_composite'] = df[available_review_cols].mean(axis=1)
+    print("      review_composite created")
+```
+
+```python
+# 10.6 Distance Features
+print("\n[6/8] Creating distance features...")
+
+if 'latitude' in df.columns and 'longitude' in df.columns:
+    center_lat = df['latitude'].median()
+    center_lon = df['longitude'].median()
+
+    df['dist_from_center'] = np.sqrt(
+        (df['latitude'] - center_lat) ** 2 +
+        (df['longitude'] - center_lon) ** 2
+    )
+    print(f"      dist_from_center created (center: {center_lat:.4f}, {center_lon:.4f})")
+```
+
+```python
+# 10.7 Interaction Features
+print("\n[7/8] Creating interaction features...")
+
+# Bedrooms × Location score
+if 'bedrooms' in df.columns and 'review_scores_location' in df.columns:
+    df['bedrooms_x_location'] = df['bedrooms'] * df['review_scores_location']
+    print("      bedrooms_x_location created")
+
+# Accommodates × Superhost
+if 'accommodates' in df.columns and 'is_superhost' in df.columns:
+    df['accommodates_x_superhost'] = df['accommodates'] * df['is_superhost']
+    print("      accommodates_x_superhost created")
+
+# Reviews × Rating
+if 'number_of_reviews' in df.columns and 'review_scores_rating' in df.columns:
+    df['reviews_x_rating'] = np.log1p(df['number_of_reviews']) * df['review_scores_rating']
+    print("      reviews_x_rating created")
+```
+
+```python
+# 10.8 Polynomial Features
+print("\n[8/8] Creating polynomial features...")
+
+poly_cols = ['accommodates', 'bedrooms', 'bathrooms', 'beds']
+poly_cols = [c for c in poly_cols if c in df.columns]
+
+for col in poly_cols:
+    df[f'{col}_squared'] = df[col] ** 2
+    df[f'{col}_log'] = np.log1p(df[col])
+    print(f"      {col}_squared and {col}_log created")
+
+print("\n✅ Feature engineering complete!")
+print(f"Total columns: {len(df.columns)}")
+```
+
+================================================================================
+CELL 11: SELECT FEATURES FOR MODEL
+================================================================================
+
+```python
+# ============================================================================
+# SELECT FEATURES FOR MODEL
+# ============================================================================
+
+# Define feature list (only include features that exist)
+potential_features = [
+    # Core property features
+    'accommodates', 'bedrooms', 'beds', 'bathrooms',
+    'latitude', 'longitude', 'neighbourhood_enc', 'dist_from_center',
+    'room_type_enc', 'property_type_enc',
+
+    # Host features
+    'is_superhost', 'host_verified', 'host_listings_count',
+
+    # Listing features
+    'instant_book', 'minimum_nights', 'amenities_count',
+    'description_length', 'has_luxury',
+
+    # Review scores
+    'review_scores_rating', 'review_scores_cleanliness',
+    'review_scores_location', 'review_scores_value',
+    'review_composite', 'number_of_reviews', 'reviews_per_month',
+
+    # Derived ratios
+    'beds_per_bedroom', 'bathrooms_per_bedroom', 'capacity_score',
+
+    # Calendar features (availability only - NOT price features to avoid leakage)
+    'cal_availability_rate', 'high_demand',
+
+    # Review sentiment
+    'review_count', 'avg_comment_length', 'avg_comment_words',
+    'total_positive', 'total_negative', 'avg_sentiment', 'sentiment_ratio',
+    'days_since_review', 'has_recent_reviews',
+
+    # Interaction features
+    'bedrooms_x_location', 'accommodates_x_superhost', 'reviews_x_rating',
+
+    # Polynomial features
+    'accommodates_squared', 'bedrooms_squared', 'bathrooms_squared', 'beds_squared',
+    'accommodates_log', 'bedrooms_log', 'bathrooms_log', 'beds_log'
+]
+
+# Filter to only existing columns
+features = [f for f in potential_features if f in df.columns]
+
+print("=" * 60)
+print("SELECTED FEATURES")
+print("=" * 60)
+print(f"Total features: {len(features)}")
+print(f"\nFeatures: {features}")
+
+# Check for any missing
+missing_features = [f for f in potential_features if f not in df.columns]
+if missing_features:
+    print(f"\n⚠️ Missing features (not in data): {missing_features}")
+```
+
+================================================================================
+CELL 12: PREPARE TRAIN/TEST DATA
+================================================================================
+
+```python
+# ============================================================================
+# PREPARE TRAIN/TEST DATA
+# ============================================================================
+
+print("=" * 60)
+print("PREPARING TRAIN/TEST SPLIT")
+print("=" * 60)
+
+# Create model dataframe
+df_model = df[features + ['price_clean']].copy()
+
+# Convert all to numeric and handle infinities
+for col in features:
+    df_model[col] = pd.to_numeric(df_model[col], errors='coerce').fillna(0)
+
+df_model = df_model.replace([np.inf, -np.inf], np.nan).dropna()
+
+# Define X and y
+X = df_model[features]
+y = df_model['price_clean']
+
+print(f"Samples: {len(X):,}")
+print(f"Features: {len(features)}")
+
+# Train/test split
+TEST_SIZE = 0.2
+RANDOM_STATE = 42
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE
+)
+
+print(f"\nTrain set: {len(X_train):,} samples")
+print(f"Test set:  {len(X_test):,} samples")
+
+# Scale features
+scaler = StandardScaler()
+X_train_scaled = pd.DataFrame(
+    scaler.fit_transform(X_train),
+    columns=features,
+    index=X_train.index
+)
+X_test_scaled = pd.DataFrame(
+    scaler.transform(X_test),
+    columns=features,
+    index=X_test.index
+)
+
+print("\n✅ Data ready for training!")
+```
+
+================================================================================
+CELL 13: DEFINE MODELS
+================================================================================
+
+```python
+# ============================================================================
+# DEFINE ALL MODELS
+# ============================================================================
+
+# Models dictionary: name -> (model, needs_scaling)
+MODELS = {
+    # Linear Models (need scaling)
+    'Linear Regression': (LinearRegression(), True),
+    'Ridge': (Ridge(alpha=1.0), True),
+    'Lasso': (Lasso(alpha=0.1), True),
+    'ElasticNet': (ElasticNet(alpha=0.1, l1_ratio=0.5), True),
+    'Bayesian Ridge': (BayesianRidge(), True),
+
+    # Tree Models (don't need scaling)
+    'Decision Tree': (DecisionTreeRegressor(max_depth=15, random_state=42), False),
+    'Random Forest': (RandomForestRegressor(n_estimators=200, max_depth=15,
+                                             random_state=42, n_jobs=-1), False),
+    'Extra Trees': (ExtraTreesRegressor(n_estimators=200, max_depth=15,
+                                         random_state=42, n_jobs=-1), False),
+
+    # Boosting Models (don't need scaling)
+    'Gradient Boosting': (GradientBoostingRegressor(n_estimators=200, max_depth=8,
+                                                     learning_rate=0.1, random_state=42), False),
+    'AdaBoost': (AdaBoostRegressor(n_estimators=100, learning_rate=0.1, random_state=42), False),
+
+    # Other Models
+    'Bagging': (BaggingRegressor(n_estimators=100, random_state=42, n_jobs=-1), False),
+    'KNN': (KNeighborsRegressor(n_neighbors=5, n_jobs=-1), True),
+    'SVR': (SVR(kernel='rbf', C=100, gamma='scale'), True),
+    'Neural Network': (MLPRegressor(hidden_layer_sizes=(100, 50), max_iter=500, random_state=42), True),
+}
+
+# Add advanced models if available
+if HAS_XGB:
+    MODELS['XGBoost'] = (xgb.XGBRegressor(
+        n_estimators=500, max_depth=10, learning_rate=0.05,
+        subsample=0.8, colsample_bytree=0.8, random_state=42, n_jobs=-1
+    ), False)
+
+if HAS_LGB:
+    MODELS['LightGBM'] = (lgb.LGBMRegressor(
+        n_estimators=500, max_depth=12, learning_rate=0.05,
+        num_leaves=50, subsample=0.8, random_state=42, n_jobs=-1, verbose=-1
+    ), False)
+
+if HAS_CAT:
+    MODELS['CatBoost'] = (cb.CatBoostRegressor(
+        iterations=500, depth=10, learning_rate=0.05, random_state=42, verbose=0
+    ), False)
+
+print(f"Total models available: {len(MODELS)}")
+print(f"Models: {list(MODELS.keys())}")
+```
+
+================================================================================
+CELL 14: TRAIN ALL MODELS
+================================================================================
+
+```python
+# ============================================================================
+# TRAIN ALL MODELS
+# ============================================================================
+
+print("=" * 60)
+print("TRAINING MODELS")
+print("=" * 60)
+
+results = {}
+trained_models = {}
+
+for i, (name, (model, needs_scale)) in enumerate(MODELS.items()):
+    print(f"\n[{i+1}/{len(MODELS)}] Training {name}...")
+
+    # Select appropriate data
+    X_tr = X_train_scaled if needs_scale else X_train
+    X_te = X_test_scaled if needs_scale else X_test
+
+    try:
+        # Train
+        model.fit(X_tr, y_train)
+
+        # Predict
+        y_pred = model.predict(X_te)
+
+        # Metrics
+        r2 = r2_score(y_test, y_pred)
+        mae = mean_absolute_error(y_test, y_pred)
+        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+
+        # MAPE (exclude zero values)
+        mask = y_test != 0
+        mape = np.mean(np.abs((y_test[mask] - y_pred[mask]) / y_test[mask])) * 100
+        prediction_accuracy = 100 - mape
+
+        # Store results
+        results[name] = {
+            'R2': r2,
+            'MAE': mae,
+            'RMSE': rmse,
+            'MAPE': mape,
+            'Prediction_Accuracy': prediction_accuracy
+        }
+
+        trained_models[name] = {
+            'model': model,
+            'needs_scale': needs_scale
+        }
+
+        print(f"      R²: {r2:.4f} | Accuracy: {prediction_accuracy:.2f}% | MAE: ${mae:.2f}")
+
+    except Exception as e:
+        print(f"      ❌ Error: {e}")
+        results[name] = {'error': str(e)}
+
+print("\n✅ Training complete!")
+```
+
+================================================================================
+CELL 15: COMPARE RESULTS
+================================================================================
+
+```python
+# ============================================================================
+# COMPARE MODEL RESULTS
+# ============================================================================
+
+print("=" * 60)
+print("MODEL COMPARISON (Sorted by Prediction Accuracy)")
+print("=" * 60)
+
+# Create results dataframe
+results_df = pd.DataFrame([
+    {
+        'Model': name,
+        'Prediction Accuracy (%)': round(metrics['Prediction_Accuracy'], 2),
+        'MAPE (%)': round(metrics['MAPE'], 2),
+        'R² (%)': round(metrics['R2'] * 100, 2),
+        'MAE ($)': round(metrics['MAE'], 2),
+        'RMSE ($)': round(metrics['RMSE'], 2)
+    }
+    for name, metrics in results.items()
+    if 'error' not in metrics
+]).sort_values('Prediction Accuracy (%)', ascending=False)
+
+print(results_df.to_string(index=False))
+
+# Best model
+best_model_name = results_df.iloc[0]['Model']
+best_accuracy = results_df.iloc[0]['Prediction Accuracy (%)']
+print(f"\n🏆 Best Model: {best_model_name} with {best_accuracy}% accuracy")
+```
+
+```python
+# Visualization
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+# Bar chart - Prediction Accuracy
+ax1 = axes[0]
+colors = plt.cm.RdYlGn(results_df['Prediction Accuracy (%)'] / 100)
+ax1.barh(results_df['Model'], results_df['Prediction Accuracy (%)'], color=colors)
+ax1.axvline(x=80, color='green', linestyle='--', label='Target: 80%')
+ax1.set_xlabel('Prediction Accuracy (%)')
+ax1.set_title('Model Comparison - Prediction Accuracy')
+ax1.legend()
+
+# Bar chart - R² Score
+ax2 = axes[1]
+colors = plt.cm.RdYlGn(results_df['R² (%)'] / 100)
+ax2.barh(results_df['Model'], results_df['R² (%)'], color=colors)
+ax2.set_xlabel('R² Score (%)')
+ax2.set_title('Model Comparison - R² Score')
+
+plt.tight_layout()
+plt.show()
+```
+
+================================================================================
+CELL 16: FEATURE IMPORTANCE (Best Model)
+================================================================================
+
+```python
+# ============================================================================
+# FEATURE IMPORTANCE (For tree-based models)
+# ============================================================================
+
+# Get best model
+best_model = trained_models[best_model_name]['model']
+
+# Check if model has feature_importances_
+if hasattr(best_model, 'feature_importances_'):
+    importance = best_model.feature_importances_
+
+    # Create importance dataframe
+    importance_df = pd.DataFrame({
+        'Feature': features,
+        'Importance': importance
+    }).sort_values('Importance', ascending=False)
+
+    print("=" * 60)
+    print(f"FEATURE IMPORTANCE ({best_model_name})")
+    print("=" * 60)
+    print(importance_df.head(20).to_string(index=False))
+
+    # Plot
+    plt.figure(figsize=(10, 8))
+    top_20 = importance_df.head(20)
+    plt.barh(top_20['Feature'], top_20['Importance'])
+    plt.xlabel('Importance')
+    plt.title(f'Top 20 Features ({best_model_name})')
+    plt.gca().invert_yaxis()
+    plt.tight_layout()
+    plt.show()
+else:
+    print(f"⚠️ {best_model_name} doesn't have feature_importances_ attribute")
+```
+
+================================================================================
+CELL 17: ACTUAL VS PREDICTED PLOT
+================================================================================
+
+```python
+# ============================================================================
+# ACTUAL VS PREDICTED PLOT
+# ============================================================================
+
+# Get predictions from best model
+model_info = trained_models[best_model_name]
+X_te = X_test_scaled if model_info['needs_scale'] else X_test
+y_pred = model_info['model'].predict(X_te)
+
+# Create prediction dataframe
+pred_df = pd.DataFrame({
+    'Actual': y_test.values,
+    'Predicted': y_pred,
+    'Error': y_test.values - y_pred,
+    'Error_Pct': ((y_test.values - y_pred) / y_test.values * 100)
+})
+
+# Plot
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+# Scatter plot
+ax1 = axes[0]
+ax1.scatter(pred_df['Actual'], pred_df['Predicted'], alpha=0.5, s=10)
+ax1.plot([pred_df['Actual'].min(), pred_df['Actual'].max()],
+         [pred_df['Actual'].min(), pred_df['Actual'].max()],
+         'r--', label='Perfect Prediction')
+ax1.set_xlabel('Actual Price ($)')
+ax1.set_ylabel('Predicted Price ($)')
+ax1.set_title(f'Actual vs Predicted ({best_model_name})')
+ax1.legend()
+
+# Error distribution
+ax2 = axes[1]
+ax2.hist(pred_df['Error'], bins=50, edgecolor='black')
+ax2.axvline(x=0, color='red', linestyle='--')
+ax2.set_xlabel('Prediction Error ($)')
+ax2.set_ylabel('Count')
+ax2.set_title('Error Distribution')
+
+plt.tight_layout()
+plt.show()
+
+# Error statistics
+print("\nError Statistics:")
+print(f"Mean Error: ${pred_df['Error'].mean():.2f}")
+print(f"Std Error:  ${pred_df['Error'].std():.2f}")
+print(f"Min Error:  ${pred_df['Error'].min():.2f}")
+print(f"Max Error:  ${pred_df['Error'].max():.2f}")
+```
+
+================================================================================
+CELL 18: MAKE A SINGLE PREDICTION
+================================================================================
+
+```python
+# ============================================================================
+# MAKE A SINGLE PREDICTION (Manual Input)
+# ============================================================================
+
+def predict_price(
+    accommodates=4,
+    bedrooms=2,
+    beds=2,
+    bathrooms=1.0,
+    latitude=None,  # Will use median if None
+    longitude=None,  # Will use median if None
+    room_type='Entire home/apt',
+    neighbourhood='Unknown',
+    is_superhost=False,
+    instant_bookable=True,
+    minimum_nights=1,
+    amenities_count=20,
+    review_rating=4.5,
+    number_of_reviews=10,
+    model_name=None  # Will use best model if None
+):
+    """
+    Predict price for a single listing
+    """
+    # Use best model if not specified
+    if model_name is None:
+        model_name = best_model_name
+
+    # Use median coordinates if not specified
+    if latitude is None:
+        latitude = df['latitude'].median()
+    if longitude is None:
+        longitude = df['longitude'].median()
+
+    # Encode categorical variables
+    room_type_enc = 0
+    if room_type in le_room.classes_:
+        room_type_enc = le_room.transform([room_type])[0]
+
+    neighbourhood_enc = 0
+    if neighbourhood in le_neigh.classes_:
+        neighbourhood_enc = le_neigh.transform([neighbourhood])[0]
+
+    # Calculate derived features
+    center_lat = df['latitude'].median()
+    center_lon = df['longitude'].median()
+    dist_from_center = np.sqrt((latitude - center_lat)**2 + (longitude - center_lon)**2)
+
+    beds_per_bedroom = beds / max(bedrooms, 1)
+    bathrooms_per_bedroom = bathrooms / max(bedrooms, 1)
+    capacity_score = accommodates * max(bedrooms, 1) * max(beds, 1)
+    review_composite = review_rating
+
+    # Create feature dictionary
+    feature_values = {
+        'accommodates': accommodates,
+        'bedrooms': bedrooms,
+        'beds': beds,
+        'bathrooms': bathrooms,
+        'latitude': latitude,
+        'longitude': longitude,
+        'neighbourhood_enc': neighbourhood_enc,
+        'dist_from_center': dist_from_center,
+        'room_type_enc': room_type_enc,
+        'property_type_enc': 0,
+        'is_superhost': 1 if is_superhost else 0,
+        'host_verified': 1,
+        'host_listings_count': 1,
+        'instant_book': 1 if instant_bookable else 0,
+        'minimum_nights': minimum_nights,
+        'amenities_count': amenities_count,
+        'description_length': 500,
+        'has_luxury': 0,
+        'review_scores_rating': review_rating,
+        'review_scores_cleanliness': review_rating,
+        'review_scores_location': review_rating,
+        'review_scores_value': review_rating,
+        'review_composite': review_composite,
+        'number_of_reviews': number_of_reviews,
+        'reviews_per_month': 1.0,
+        'beds_per_bedroom': beds_per_bedroom,
+        'bathrooms_per_bedroom': bathrooms_per_bedroom,
+        'capacity_score': capacity_score,
+        'cal_availability_rate': 0.7,
+        'high_demand': 0,
+        'review_count': number_of_reviews,
+        'avg_comment_length': 150,
+        'avg_comment_words': 30,
+        'total_positive': int(number_of_reviews * 2),
+        'total_negative': 0,
+        'avg_sentiment': 1.0,
+        'sentiment_ratio': 10.0,
+        'days_since_review': 30,
+        'has_recent_reviews': 1,
+        'bedrooms_x_location': bedrooms * review_rating,
+        'accommodates_x_superhost': accommodates * (1 if is_superhost else 0),
+        'reviews_x_rating': np.log1p(number_of_reviews) * review_rating,
+        'accommodates_squared': accommodates ** 2,
+        'bedrooms_squared': bedrooms ** 2,
+        'bathrooms_squared': bathrooms ** 2,
+        'beds_squared': beds ** 2,
+        'accommodates_log': np.log1p(accommodates),
+        'bedrooms_log': np.log1p(bedrooms),
+        'bathrooms_log': np.log1p(bathrooms),
+        'beds_log': np.log1p(beds)
+    }
+
+    # Create input dataframe
+    input_df = pd.DataFrame([{f: feature_values.get(f, 0) for f in features}])
+
+    # Get model and predict
+    model_info = trained_models[model_name]
+    if model_info['needs_scale']:
+        input_scaled = pd.DataFrame(scaler.transform(input_df), columns=features)
+        prediction = model_info['model'].predict(input_scaled)[0]
+    else:
+        prediction = model_info['model'].predict(input_df)[0]
+
+    return max(prediction, 10)  # Ensure positive price
+
+# Example prediction
+print("=" * 60)
+print("EXAMPLE PREDICTION")
+print("=" * 60)
+
+predicted_price = predict_price(
+    accommodates=4,
+    bedrooms=2,
+    beds=2,
+    bathrooms=1.0,
+    room_type='Entire home/apt',
+    is_superhost=True,
+    instant_bookable=True,
+    amenities_count=25,
+    review_rating=4.8,
+    number_of_reviews=50
+)
+
+print(f"\nInput:")
+print(f"  - 2 bedrooms, 2 beds, 1 bathroom")
+print(f"  - Accommodates 4 guests")
+print(f"  - Entire home/apt")
+print(f"  - Superhost: Yes")
+print(f"  - Rating: 4.8, Reviews: 50")
+print(f"\n💰 Predicted Price: ${predicted_price:.2f}/night")
+```
+
+================================================================================
+CELL 19: PREDICT MULTIPLE SCENARIOS
+================================================================================
+
+```python
+# ============================================================================
+# PREDICT MULTIPLE SCENARIOS
+# ============================================================================
+
+scenarios = [
+    {'name': 'Budget Studio', 'accommodates': 2, 'bedrooms': 0, 'beds': 1,
+     'bathrooms': 1, 'room_type': 'Private room', 'is_superhost': False,
+     'amenities_count': 10, 'review_rating': 4.0, 'number_of_reviews': 5},
+
+    {'name': 'Standard 1BR', 'accommodates': 2, 'bedrooms': 1, 'beds': 1,
+     'bathrooms': 1, 'room_type': 'Entire home/apt', 'is_superhost': False,
+     'amenities_count': 20, 'review_rating': 4.5, 'number_of_reviews': 20},
+
+    {'name': 'Family 2BR', 'accommodates': 4, 'bedrooms': 2, 'beds': 2,
+     'bathrooms': 1, 'room_type': 'Entire home/apt', 'is_superhost': True,
+     'amenities_count': 30, 'review_rating': 4.8, 'number_of_reviews': 50},
+
+    {'name': 'Luxury 3BR', 'accommodates': 6, 'bedrooms': 3, 'beds': 4,
+     'bathrooms': 2, 'room_type': 'Entire home/apt', 'is_superhost': True,
+     'amenities_count': 50, 'review_rating': 4.9, 'number_of_reviews': 100},
+
+    {'name': 'Large Group 4BR', 'accommodates': 10, 'bedrooms': 4, 'beds': 6,
+     'bathrooms': 3, 'room_type': 'Entire home/apt', 'is_superhost': True,
+     'amenities_count': 60, 'review_rating': 4.9, 'number_of_reviews': 150},
+]
+
+print("=" * 60)
+print("PRICE PREDICTIONS FOR DIFFERENT SCENARIOS")
+print("=" * 60)
+
+for scenario in scenarios:
+    price = predict_price(
+        accommodates=scenario['accommodates'],
+        bedrooms=scenario['bedrooms'],
+        beds=scenario['beds'],
+        bathrooms=scenario['bathrooms'],
+        room_type=scenario['room_type'],
+        is_superhost=scenario['is_superhost'],
+        amenities_count=scenario['amenities_count'],
+        review_rating=scenario['review_rating'],
+        number_of_reviews=scenario['number_of_reviews']
+    )
+    print(f"\n{scenario['name']}:")
+    print(f"  {scenario['bedrooms']}BR/{scenario['beds']}Beds/{scenario['bathrooms']}Bath | "
+          f"Accommodates {scenario['accommodates']} | Rating: {scenario['review_rating']}")
+    print(f"  💰 Predicted: ${price:.2f}/night")
+```
+
+================================================================================
+CELL 20: SAVE MODEL (Optional)
+================================================================================
+
+```python
+# ============================================================================
+# SAVE MODEL FOR LATER USE (Optional)
+# ============================================================================
+
+import pickle
+
+# Save best model
+model_data = {
+    'model': trained_models[best_model_name]['model'],
+    'scaler': scaler,
+    'features': features,
+    'le_room': le_room,
+    'le_neigh': le_neigh,
+    'le_prop': le_prop,
+    'needs_scale': trained_models[best_model_name]['needs_scale'],
+    'model_name': best_model_name,
+    'metrics': results[best_model_name]
+}
+
+# Save to file
+with open('airbnb_model.pkl', 'wb') as f:
+    pickle.dump(model_data, f)
+
+print(f"✅ Model saved to 'airbnb_model.pkl'")
+print(f"   Model: {best_model_name}")
+print(f"   Accuracy: {results[best_model_name]['Prediction_Accuracy']:.2f}%")
+```
+
+================================================================================
+CELL 21: LOAD AND USE SAVED MODEL (Optional)
+================================================================================
+
+```python
+# ============================================================================
+# LOAD AND USE SAVED MODEL (Optional)
+# ============================================================================
+
+import pickle
+
+# Load model
+with open('airbnb_model.pkl', 'rb') as f:
+    model_data = pickle.load(f)
+
+print(f"✅ Model loaded: {model_data['model_name']}")
+print(f"   Features: {len(model_data['features'])}")
+print(f"   Accuracy: {model_data['metrics']['Prediction_Accuracy']:.2f}%")
+
+# Use loaded model for prediction
+def predict_with_loaded_model(input_dict):
+    """Make prediction using loaded model"""
+    input_df = pd.DataFrame([{f: input_dict.get(f, 0) for f in model_data['features']}])
+
+    if model_data['needs_scale']:
+        input_scaled = model_data['scaler'].transform(input_df)
+        return model_data['model'].predict(input_scaled)[0]
+    else:
+        return model_data['model'].predict(input_df)[0]
+```
+
+================================================================================
+END OF NOTEBOOK CODE
+================================================================================
+
+NOTES:
+------
+1. Run cells in order (1 to 21)
+2. Some cells depend on previous cells
+3. Update file paths in Cell 2 to match your data location
+4. Optional cells (20, 21) are for saving/loading models
+5. Adjust hyperparameters as needed for your specific dataset
+
+For questions, refer to APP_DOCUMENTATION.txt
