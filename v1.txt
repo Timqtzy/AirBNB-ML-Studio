@@ -1,0 +1,746 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import pickle
+import os
+import zipfile
+import tempfile
+import re
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
+import plotly.express as px
+import plotly.graph_objects as go
+import warnings
+
+warnings.filterwarnings('ignore')
+
+# Import all models
+from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet, BayesianRidge
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import (RandomForestRegressor, GradientBoostingRegressor,
+                              AdaBoostRegressor, ExtraTreesRegressor, BaggingRegressor)
+from sklearn.svm import SVR
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.neural_network import MLPRegressor
+
+# Try importing advanced models
+try:
+    import xgboost as xgb
+
+    HAS_XGB = True
+except:
+    HAS_XGB = False
+
+try:
+    import lightgbm as lgb
+
+    HAS_LGB = True
+except:
+    HAS_LGB = False
+
+try:
+    import catboost as cb
+
+    HAS_CAT = True
+except:
+    HAS_CAT = False
+
+st.set_page_config(page_title="Airbnb ML Studio", page_icon="🏠", layout="wide")
+
+st.title("🏠 Airbnb Price Prediction Studio")
+st.markdown("**Full ML Pipeline with Model Selection | Supports 15+ Algorithms**")
+st.markdown("---")
+
+# All available models
+ALL_MODELS = {
+    # Linear Models
+    "Linear Regression": {"model": LinearRegression(), "category": "Linear", "scale": True},
+    "Ridge Regression": {"model": Ridge(alpha=1.0), "category": "Linear", "scale": True},
+    "Lasso Regression": {"model": Lasso(alpha=0.1), "category": "Linear", "scale": True},
+    "ElasticNet": {"model": ElasticNet(alpha=0.1, l1_ratio=0.5), "category": "Linear", "scale": True},
+    "Bayesian Ridge": {"model": BayesianRidge(), "category": "Linear", "scale": True},
+
+    # Tree Models
+    "Decision Tree": {"model": DecisionTreeRegressor(max_depth=15, random_state=42), "category": "Tree",
+                      "scale": False},
+    "Random Forest": {"model": RandomForestRegressor(n_estimators=200, max_depth=15, random_state=42, n_jobs=-1),
+                      "category": "Tree", "scale": False},
+    "Extra Trees": {"model": ExtraTreesRegressor(n_estimators=200, max_depth=15, random_state=42, n_jobs=-1),
+                    "category": "Tree", "scale": False},
+    "Gradient Boosting": {
+        "model": GradientBoostingRegressor(n_estimators=200, max_depth=8, learning_rate=0.1, random_state=42),
+        "category": "Boosting", "scale": False},
+    "AdaBoost": {"model": AdaBoostRegressor(n_estimators=100, learning_rate=0.1, random_state=42),
+                 "category": "Boosting", "scale": False},
+    "Bagging": {"model": BaggingRegressor(n_estimators=100, random_state=42, n_jobs=-1), "category": "Ensemble",
+                "scale": False},
+
+    # Other Models
+    "KNN": {"model": KNeighborsRegressor(n_neighbors=5, n_jobs=-1), "category": "Instance", "scale": True},
+    "SVR": {"model": SVR(kernel='rbf', C=100, gamma='scale'), "category": "SVM", "scale": True},
+    "Neural Network": {"model": MLPRegressor(hidden_layer_sizes=(100, 50), max_iter=500, random_state=42),
+                       "category": "Neural", "scale": True},
+}
+
+# Add advanced models if available
+if HAS_XGB:
+    ALL_MODELS["XGBoost"] = {
+        "model": xgb.XGBRegressor(n_estimators=500, max_depth=10, learning_rate=0.05,
+                                  subsample=0.8, colsample_bytree=0.8, random_state=42, n_jobs=-1),
+        "category": "Boosting", "scale": False
+    }
+
+if HAS_LGB:
+    ALL_MODELS["LightGBM"] = {
+        "model": lgb.LGBMRegressor(n_estimators=500, max_depth=12, learning_rate=0.05,
+                                   num_leaves=50, subsample=0.8, random_state=42, n_jobs=-1, verbose=-1),
+        "category": "Boosting", "scale": False
+    }
+
+if HAS_CAT:
+    ALL_MODELS["CatBoost"] = {
+        "model": cb.CatBoostRegressor(iterations=500, depth=10, learning_rate=0.05,
+                                      random_state=42, verbose=0),
+        "category": "Boosting", "scale": False
+    }
+
+# Session state
+for key in ['listings', 'calendar', 'reviews', 'neighbourhoods', 'merged_data',
+            'X_train', 'X_test', 'y_train', 'y_test', 'X_train_scaled', 'X_test_scaled',
+            'scaler', 'features', 'trained_models', 'model_results']:
+    if key not in st.session_state:
+        st.session_state[key] = None
+
+if st.session_state.trained_models is None:
+    st.session_state.trained_models = {}
+if st.session_state.model_results is None:
+    st.session_state.model_results = {}
+
+# Tabs
+tabs = st.tabs(
+    ["1️⃣ Upload", "2️⃣ Process", "3️⃣ Features", "4️⃣ Model Selection", "5️⃣ Training", "6️⃣ Results", "7️⃣ Predict"])
+
+# ============================================================================
+# TAB 1: UPLOAD
+# ============================================================================
+with tabs[0]:
+    st.header("1️⃣ Data Upload")
+
+    uploaded_zip = st.file_uploader("📁 Upload ZIP (listings, calendar, reviews, neighbourhoods)", type=['zip'])
+
+    if uploaded_zip is not None:
+        with st.spinner("Extracting..."):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                zip_path = os.path.join(tmpdir, "data.zip")
+                with open(zip_path, 'wb') as f:
+                    f.write(uploaded_zip.read())
+                with zipfile.ZipFile(zip_path, 'r') as z:
+                    z.extractall(tmpdir)
+                for root, dirs, files in os.walk(tmpdir):
+                    for f in files:
+                        fpath = os.path.join(root, f)
+                        flow = f.lower()
+                        if 'listing' in flow and flow.endswith(('.xls', '.csv')):
+                            st.session_state.listings = pd.read_csv(fpath)
+                        elif 'calendar' in flow and flow.endswith(('.xls', '.csv')):
+                            st.session_state.calendar = pd.read_csv(fpath)
+                        elif 'review' in flow and flow.endswith(('.xls', '.csv')):
+                            st.session_state.reviews = pd.read_csv(fpath)
+                        elif 'neighbour' in flow and flow.endswith(('.xls', '.csv')):
+                            st.session_state.neighbourhoods = pd.read_csv(fpath)
+
+        st.success("✅ Files loaded!")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("🏠 Listings",
+                      f"{len(st.session_state.listings):,}" if st.session_state.listings is not None else "❌")
+        with col2:
+            st.metric("📅 Calendar",
+                      f"{len(st.session_state.calendar):,}" if st.session_state.calendar is not None else "❌")
+        with col3:
+            st.metric("⭐ Reviews",
+                      f"{len(st.session_state.reviews):,}" if st.session_state.reviews is not None else "❌")
+        with col4:
+            st.metric("📍 Neighbourhoods",
+                      f"{len(st.session_state.neighbourhoods):,}" if st.session_state.neighbourhoods is not None else "❌")
+
+# ============================================================================
+# TAB 2: PROCESS
+# ============================================================================
+with tabs[1]:
+    st.header("2️⃣ Data Processing")
+
+    if st.session_state.listings is None:
+        st.warning("⚠️ Upload data first!")
+    else:
+        if st.button("⚙️ Process All Data", type="primary", use_container_width=True):
+            progress = st.progress(0)
+
+            listings = st.session_state.listings.copy()
+            calendar = st.session_state.calendar.copy() if st.session_state.calendar is not None else None
+            reviews = st.session_state.reviews.copy() if st.session_state.reviews is not None else None
+            neighbourhoods = st.session_state.neighbourhoods.copy() if st.session_state.neighbourhoods is not None else None
+
+            # NEIGHBOURHOODS
+            progress.progress(10)
+            if neighbourhoods is not None:
+                def extract_polygon_stats(geom_str):
+                    try:
+                        coords = re.findall(r'(-?\d+\.?\d*)\s+(-?\d+\.?\d*)', str(geom_str))
+                        if not coords: return None, None, None, None
+                        lons = [float(c[0]) for c in coords]
+                        lats = [float(c[1]) for c in coords]
+                        return np.mean(lons), np.mean(lats), (max(lons) - min(lons)) * (max(lats) - min(lats)), \
+                            sum(np.sqrt((lons[i] - lons[i - 1]) ** 2 + (lats[i] - lats[i - 1]) ** 2) for i in
+                                range(1, len(lons)))
+                    except:
+                        return None, None, None, None
+
+
+                neighbourhoods['neigh_centroid_lon'], neighbourhoods['neigh_centroid_lat'], \
+                    neighbourhoods['neigh_area'], neighbourhoods['neigh_perimeter'] = \
+                    zip(*neighbourhoods['geometry'].apply(extract_polygon_stats))
+
+                le_ng = LabelEncoder()
+                neighbourhoods['neigh_group_enc'] = le_ng.fit_transform(
+                    neighbourhoods['neighbourhood_group'].fillna('Unknown'))
+                neigh_features = neighbourhoods[['neighbourhood', 'neigh_centroid_lon', 'neigh_centroid_lat',
+                                                 'neigh_area', 'neigh_perimeter', 'neigh_group_enc']].copy()
+
+                lpc = listings.groupby('neighbourhood_cleansed').size().reset_index(name='neigh_listing_count')
+                neigh_features = neigh_features.merge(lpc, left_on='neighbourhood', right_on='neighbourhood_cleansed',
+                                                      how='left')
+                neigh_features['neigh_listing_count'] = neigh_features['neigh_listing_count'].fillna(0)
+                neigh_features = neigh_features.drop(columns=['neighbourhood_cleansed'], errors='ignore')
+
+                ns = listings.groupby('neighbourhood_cleansed').agg({
+                    'review_scores_rating': 'mean', 'accommodates': 'mean', 'bedrooms': 'mean',
+                    'number_of_reviews': 'mean'
+                }).reset_index()
+                ns.columns = ['neighbourhood', 'neigh_avg_rating', 'neigh_avg_accommodates', 'neigh_avg_bedrooms',
+                              'neigh_avg_reviews']
+                neigh_features = neigh_features.merge(ns, on='neighbourhood', how='left')
+                st.write("✅ Neighbourhoods processed")
+            else:
+                neigh_features = None
+
+            # CALENDAR
+            progress.progress(30)
+            if calendar is not None:
+                calendar['price_cal'] = pd.to_numeric(calendar['price'].replace(r'[\$,]', '', regex=True),
+                                                      errors='coerce')
+                calendar = calendar[(calendar['price_cal'] > 0) & (calendar['price_cal'] < 2000)]
+                calendar['is_available'] = (calendar['available'] == 't').astype(int)
+                cal_agg = calendar.groupby('listing_id').agg({
+                    'price_cal': ['mean', 'std', 'min', 'max', 'median', lambda x: x.quantile(0.25),
+                                  lambda x: x.quantile(0.75)],
+                    'is_available': 'mean'
+                }).reset_index()
+                cal_agg.columns = ['listing_id', 'cal_price_mean', 'cal_price_std', 'cal_price_min',
+                                   'cal_price_max', 'cal_price_median', 'cal_price_q25', 'cal_price_q75',
+                                   'cal_avail_rate']
+                cal_agg['price_range'] = cal_agg['cal_price_max'] - cal_agg['cal_price_min']
+                cal_agg['price_iqr'] = cal_agg['cal_price_q75'] - cal_agg['cal_price_q25']
+                cal_agg['price_volatility'] = cal_agg['cal_price_std'] / cal_agg['cal_price_mean'].replace(0, 1)
+                cal_agg['dynamic_pricing'] = (cal_agg['price_range'] > 10).astype(int)
+                cal_agg['high_demand'] = (cal_agg['cal_avail_rate'] < 0.3).astype(int)
+                st.write("✅ Calendar processed")
+            else:
+                cal_agg = None
+
+            # REVIEWS
+            progress.progress(50)
+            if reviews is not None:
+                reviews['comment_length'] = reviews['comments'].fillna('').str.len()
+                reviews['comment_words'] = reviews['comments'].fillna('').str.split().str.len()
+                positive = ['great', 'excellent', 'amazing', 'wonderful', 'perfect', 'love', 'fantastic',
+                            'beautiful', 'clean', 'comfortable', 'recommend', 'awesome', 'spotless', 'cozy']
+                negative = ['bad', 'terrible', 'dirty', 'awful', 'worst', 'disappointing', 'problem', 'issue']
+                reviews['positive'] = reviews['comments'].fillna('').str.lower().apply(
+                    lambda x: sum(1 for w in positive if w in x))
+                reviews['negative'] = reviews['comments'].fillna('').str.lower().apply(
+                    lambda x: sum(1 for w in negative if w in x))
+                reviews['sentiment'] = reviews['positive'] - reviews['negative']
+                review_agg = reviews.groupby('listing_id').agg({
+                    'id': 'count', 'comment_length': 'mean', 'comment_words': ['mean', 'max'],
+                    'positive': 'sum', 'negative': 'sum', 'sentiment': ['sum', 'mean'], 'date': 'max'
+                }).reset_index()
+                review_agg.columns = ['listing_id', 'review_count', 'avg_comment_len', 'avg_comment_words',
+                                      'max_comment_words', 'total_positive', 'total_negative',
+                                      'total_sentiment', 'avg_sentiment', 'last_review']
+                review_agg['sentiment_ratio'] = review_agg['total_positive'] / (review_agg['total_negative'] + 1)
+                review_agg['last_review'] = pd.to_datetime(review_agg['last_review'])
+                review_agg['days_since_review'] = (pd.Timestamp.now() - review_agg['last_review']).dt.days
+                review_agg['has_recent_review'] = (review_agg['days_since_review'] < 60).astype(int)
+                st.write("✅ Reviews processed")
+            else:
+                review_agg = None
+
+            # LISTINGS
+            progress.progress(70)
+            listings['price_clean'] = pd.to_numeric(listings['price'].replace(r'[\$,]', '', regex=True),
+                                                    errors='coerce')
+            for col in ['host_response_rate', 'host_acceptance_rate']:
+                if col in listings.columns:
+                    listings[col] = pd.to_numeric(listings[col].replace('%', '', regex=True), errors='coerce') / 100
+            fill_med = ['bathrooms', 'bedrooms', 'beds', 'review_scores_rating', 'review_scores_cleanliness',
+                        'review_scores_location', 'review_scores_value', 'host_response_rate', 'host_acceptance_rate']
+            for col in fill_med:
+                if col in listings.columns:
+                    listings[col] = listings[col].fillna(listings[col].median())
+            listings['host_listings_count'] = listings['host_listings_count'].fillna(1)
+            listings['reviews_per_month'] = listings['reviews_per_month'].fillna(0)
+            st.write("✅ Listings processed")
+
+            # MERGE
+            progress.progress(85)
+            df = listings.copy()
+            if cal_agg is not None:
+                df = df.merge(cal_agg, left_on='id', right_on='listing_id', how='left')
+            if review_agg is not None:
+                df = df.merge(review_agg, left_on='id', right_on='listing_id', how='left', suffixes=('', '_rev'))
+            if neigh_features is not None:
+                df = df.merge(neigh_features, left_on='neighbourhood_cleansed', right_on='neighbourhood', how='left')
+
+            for col in df.columns:
+                if df[col].dtype in ['float64', 'int64'] and df[col].isnull().sum() > 0:
+                    df[col] = df[col].fillna(0)
+
+            # Outliers
+            Q1, Q3 = df['price_clean'].quantile(0.03), df['price_clean'].quantile(0.97)
+            df = df[(df['price_clean'] >= Q1) & (df['price_clean'] <= Q3) & (df['price_clean'] > 0)]
+
+            progress.progress(100)
+            st.session_state.merged_data = df
+            st.success(f"✅ Merged: {len(df):,} rows")
+
+# ============================================================================
+# TAB 3: FEATURES
+# ============================================================================
+with tabs[2]:
+    st.header("3️⃣ Feature Engineering")
+
+    if st.session_state.merged_data is None:
+        st.warning("⚠️ Process data first!")
+    else:
+        # Settings
+        col1, col2 = st.columns(2)
+        with col1:
+            test_size = st.slider("Test Size %", 5, 30, 20) / 100
+        with col2:
+            random_state = st.number_input("Random State", 0, 100, 42)
+
+        if st.button("⚙️ Engineer Features", type="primary", use_container_width=True):
+            df = st.session_state.merged_data.copy()
+
+            # Binary
+            binary = {'host_is_superhost': 'is_superhost', 'host_identity_verified': 'host_verified',
+                      'instant_bookable': 'instant_book', 'host_has_profile_pic': 'has_profile_pic'}
+            for old, new in binary.items():
+                if old in df.columns:
+                    df[new] = df[old].map({'t': 1, 'f': 0}).fillna(0)
+
+            # Categorical
+            le_room = LabelEncoder()
+            df['room_type_enc'] = le_room.fit_transform(df['room_type'].fillna('Unknown'))
+            le_neigh = LabelEncoder()
+            df['neighbourhood_enc'] = le_neigh.fit_transform(df['neighbourhood_cleansed'].fillna('Unknown'))
+            le_prop = LabelEncoder()
+            df['property_type_enc'] = le_prop.fit_transform(df['property_type'].fillna('Unknown'))
+
+            # Text
+            df['amenities_count'] = df['amenities'].fillna('[]').str.count(',') + 1
+            df['desc_length'] = df['description'].fillna('').str.len()
+            df['name_length'] = df['name'].fillna('').str.len()
+            premium = ['pool', 'hot tub', 'gym', 'sauna', 'fireplace', 'waterfront', 'beach', 'lake']
+            df['premium_amenities'] = df['amenities'].fillna('').str.lower().apply(
+                lambda x: sum(1 for a in premium if a in x))
+            luxury = ['luxury', 'premium', 'waterfront', 'ocean', 'beach', 'view', 'lake', 'private']
+            df['has_luxury'] = df['name'].fillna('').str.lower().str.contains('|'.join(luxury)).astype(int)
+
+            # Engineered
+            df['beds_per_bedroom'] = df['beds'] / df['bedrooms'].replace(0, 1)
+            df['baths_per_bedroom'] = df['bathrooms'] / df['bedrooms'].replace(0, 1)
+            df['capacity_score'] = df['accommodates'] * df['bedrooms'] * df['beds']
+            df['space_score'] = df['accommodates'] + df['bedrooms'] * 2 + df['beds'] + df['bathrooms'] * 1.5
+
+            rcols = ['review_scores_rating', 'review_scores_cleanliness', 'review_scores_location',
+                     'review_scores_value']
+            avail = [c for c in rcols if c in df.columns]
+            if avail:
+                df['review_composite'] = df[avail].mean(axis=1)
+                df['review_min'] = df[avail].min(axis=1)
+                df['review_std'] = df[avail].std(axis=1)
+
+            # Distance
+            center_lat, center_lon = df['latitude'].median(), df['longitude'].median()
+            df['dist_center'] = np.sqrt((df['latitude'] - center_lat) ** 2 + (df['longitude'] - center_lon) ** 2)
+            if 'neigh_centroid_lat' in df.columns:
+                df['dist_to_neigh_center'] = np.sqrt((df['latitude'] - df['neigh_centroid_lat']) ** 2 +
+                                                     (df['longitude'] - df['neigh_centroid_lon']) ** 2)
+                df['neigh_density'] = df['neigh_listing_count'] / df['neigh_area'].replace(0, 1)
+
+            # Features list
+            features = [
+                'accommodates', 'bedrooms', 'beds', 'bathrooms',
+                'latitude', 'longitude', 'neighbourhood_enc', 'dist_center',
+                'room_type_enc', 'property_type_enc',
+                'is_superhost', 'host_verified', 'has_profile_pic', 'host_listings_count',
+                'host_response_rate', 'host_acceptance_rate',
+                'instant_book', 'minimum_nights', 'amenities_count', 'desc_length', 'name_length',
+                'has_luxury', 'premium_amenities',
+                'review_scores_rating', 'review_scores_cleanliness', 'review_scores_location', 'review_scores_value',
+                'review_composite', 'review_min', 'review_std', 'number_of_reviews', 'reviews_per_month',
+                'beds_per_bedroom', 'baths_per_bedroom', 'capacity_score', 'space_score',
+                'cal_price_mean', 'cal_price_std', 'cal_price_min', 'cal_price_max', 'cal_price_median',
+                'cal_price_q25', 'cal_price_q75', 'cal_avail_rate',
+                'price_range', 'price_iqr', 'price_volatility', 'dynamic_pricing', 'high_demand',
+                'review_count', 'avg_comment_len', 'avg_comment_words', 'max_comment_words',
+                'total_positive', 'total_negative', 'avg_sentiment', 'sentiment_ratio',
+                'days_since_review', 'has_recent_review',
+                'neigh_centroid_lon', 'neigh_centroid_lat', 'neigh_area', 'neigh_perimeter',
+                'neigh_group_enc', 'neigh_listing_count', 'neigh_density',
+                'neigh_avg_rating', 'neigh_avg_accommodates', 'neigh_avg_bedrooms', 'neigh_avg_reviews',
+                'dist_to_neigh_center'
+            ]
+            features = [f for f in features if f in df.columns]
+            st.session_state.features = features
+
+            # Prepare
+            df_model = df[features + ['price_clean']].copy()
+            for col in features:
+                df_model[col] = pd.to_numeric(df_model[col], errors='coerce').fillna(0)
+            df_model = df_model.replace([np.inf, -np.inf], np.nan).dropna()
+
+            X = df_model[features]
+            y = df_model['price_clean']
+
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=random_state)
+
+            # Scale for models that need it
+            scaler = StandardScaler()
+            X_train_scaled = pd.DataFrame(scaler.fit_transform(X_train), columns=features, index=X_train.index)
+            X_test_scaled = pd.DataFrame(scaler.transform(X_test), columns=features, index=X_test.index)
+
+            st.session_state.X_train = X_train
+            st.session_state.X_test = X_test
+            st.session_state.y_train = y_train
+            st.session_state.y_test = y_test
+            st.session_state.X_train_scaled = X_train_scaled
+            st.session_state.X_test_scaled = X_test_scaled
+            st.session_state.scaler = scaler
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Features", len(features))
+            with col2:
+                st.metric("Train", f"{len(X_train):,}")
+            with col3:
+                st.metric("Test", f"{len(X_test):,}")
+
+            st.success("✅ Features ready!")
+
+# ============================================================================
+# TAB 4: MODEL SELECTION
+# ============================================================================
+with tabs[3]:
+    st.header("4️⃣ Model Selection")
+
+    st.markdown("### Choose Models to Train")
+
+    # Group by category
+    categories = {}
+    for name, info in ALL_MODELS.items():
+        cat = info['category']
+        if cat not in categories:
+            categories[cat] = []
+        categories[cat].append(name)
+
+    selected_models = []
+
+    # Quick select
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        if st.button("✅ Select All", use_container_width=True):
+            st.session_state.select_all = True
+    with col2:
+        if st.button("❌ Clear All", use_container_width=True):
+            st.session_state.select_all = False
+    with col3:
+        if st.button("🚀 Best Only", use_container_width=True):
+            st.session_state.best_only = True
+    with col4:
+        if st.button("⚡ Fast Only", use_container_width=True):
+            st.session_state.fast_only = True
+
+    st.markdown("---")
+
+    # Model checkboxes by category
+    for cat, models in categories.items():
+        st.markdown(f"#### {cat} Models")
+        cols = st.columns(3)
+        for i, model_name in enumerate(models):
+            with cols[i % 3]:
+                # Default selection logic
+                default = False
+                if hasattr(st.session_state, 'select_all') and st.session_state.select_all:
+                    default = True
+                elif hasattr(st.session_state, 'best_only') and st.session_state.best_only:
+                    default = model_name in ['LightGBM', 'XGBoost', 'Random Forest', 'Gradient Boosting']
+                elif hasattr(st.session_state, 'fast_only') and st.session_state.fast_only:
+                    default = model_name in ['Linear Regression', 'Ridge Regression', 'Decision Tree', 'Random Forest']
+
+                if st.checkbox(model_name, value=default, key=f"model_{model_name}"):
+                    selected_models.append(model_name)
+
+    st.markdown("---")
+    st.markdown(f"### 📋 Selected: {len(selected_models)} models")
+    if selected_models:
+        st.info(", ".join(selected_models))
+
+    # Store selection
+    st.session_state.selected_models = selected_models
+
+# ============================================================================
+# TAB 5: TRAINING
+# ============================================================================
+with tabs[4]:
+    st.header("5️⃣ Model Training")
+
+    if st.session_state.X_train is None:
+        st.warning("⚠️ Complete Feature Engineering first!")
+    elif not hasattr(st.session_state, 'selected_models') or not st.session_state.selected_models:
+        st.warning("⚠️ Select models in Model Selection tab!")
+    else:
+        selected = st.session_state.selected_models
+        st.info(f"📋 Models to train: {len(selected)}")
+
+        for m in selected:
+            st.write(f"  • {m}")
+
+        if st.button("🚀 Train Selected Models", type="primary", use_container_width=True):
+            X_train = st.session_state.X_train
+            X_test = st.session_state.X_test
+            y_train = st.session_state.y_train
+            y_test = st.session_state.y_test
+            X_train_scaled = st.session_state.X_train_scaled
+            X_test_scaled = st.session_state.X_test_scaled
+
+            results = {}
+            trained = {}
+
+            progress = st.progress(0)
+            status = st.empty()
+
+            for i, model_name in enumerate(selected):
+                status.write(f"🔄 Training {model_name}...")
+
+                model_info = ALL_MODELS[model_name]
+                model = model_info['model']
+                needs_scale = model_info['scale']
+
+                # Select data based on scaling needs
+                X_tr = X_train_scaled if needs_scale else X_train
+                X_te = X_test_scaled if needs_scale else X_test
+
+                try:
+                    # Train
+                    model.fit(X_tr, y_train)
+
+                    # Predict
+                    pred = model.predict(X_te)
+
+                    # Metrics
+                    r2 = r2_score(y_test, pred)
+                    mae = mean_absolute_error(y_test, pred)
+                    rmse = np.sqrt(mean_squared_error(y_test, pred))
+
+                    results[model_name] = {
+                        'R2': r2,
+                        'Accuracy': r2 * 100,
+                        'MAE': mae,
+                        'RMSE': rmse,
+                        'predictions': pred
+                    }
+                    trained[model_name] = {
+                        'model': model,
+                        'needs_scale': needs_scale
+                    }
+
+                    status.write(f"✅ {model_name}: {r2 * 100:.2f}%")
+
+                except Exception as e:
+                    status.write(f"❌ {model_name}: {str(e)[:50]}")
+                    results[model_name] = {'R2': 0, 'Accuracy': 0, 'MAE': 999, 'RMSE': 999, 'error': str(e)}
+
+                progress.progress((i + 1) / len(selected))
+
+            st.session_state.model_results = results
+            st.session_state.trained_models = trained
+
+            # Show summary
+            st.subheader("📊 Training Complete!")
+
+            # Sort by R2
+            sorted_results = sorted(results.items(), key=lambda x: x[1]['R2'], reverse=True)
+
+            df_results = pd.DataFrame([
+                {
+                    'Model': name,
+                    'Accuracy': f"{r['Accuracy']:.2f}%",
+                    'R² Score': f"{r['R2']:.4f}",
+                    'MAE': f"${r['MAE']:.2f}",
+                    'RMSE': f"${r['RMSE']:.2f}"
+                }
+                for name, r in sorted_results if 'error' not in r
+            ])
+
+            st.table(df_results)
+
+            # Best model
+            best = sorted_results[0]
+            if best[1]['R2'] >= 0.80:
+                st.success(f"🏆 Best: {best[0]} with {best[1]['Accuracy']:.2f}% accuracy!")
+                st.balloons()
+            else:
+                st.info(f"🏆 Best: {best[0]} with {best[1]['Accuracy']:.2f}%")
+
+# ============================================================================
+# TAB 6: RESULTS
+# ============================================================================
+with tabs[5]:
+    st.header("6️⃣ Results Comparison")
+
+    if not st.session_state.model_results:
+        st.warning("⚠️ Train models first!")
+    else:
+        results = st.session_state.model_results
+
+        # Sort by accuracy
+        sorted_results = sorted(
+            [(k, v) for k, v in results.items() if 'error' not in v],
+            key=lambda x: x[1]['R2'], reverse=True
+        )
+
+        # Metrics table
+        st.subheader("📊 Model Comparison")
+
+        df_comp = pd.DataFrame([
+            {
+                'Model': name,
+                'Accuracy (%)': round(r['Accuracy'], 2),
+                'R²': round(r['R2'], 4),
+                'MAE ($)': round(r['MAE'], 2),
+                'RMSE ($)': round(r['RMSE'], 2)
+            }
+            for name, r in sorted_results
+        ])
+        st.dataframe(df_comp, use_container_width=True)
+
+        # Bar chart
+        st.subheader("📈 Accuracy Comparison")
+        fig = px.bar(
+            df_comp, x='Model', y='Accuracy (%)',
+            color='Accuracy (%)',
+            color_continuous_scale='Viridis',
+            title="Model Accuracy Comparison"
+        )
+        fig.add_hline(y=80, line_dash="dash", line_color="red", annotation_text="80% Target")
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Select model for detailed view
+        st.subheader("🔍 Detailed Analysis")
+        model_choice = st.selectbox("Select model:", [n for n, _ in sorted_results])
+
+        if model_choice:
+            r = results[model_choice]
+            y_test = st.session_state.y_test
+            pred = r['predictions']
+
+            col1, col2, col3, col4 = st.columns(4)
+            with col1: st.metric("Accuracy", f"{r['Accuracy']:.2f}%")
+            with col2: st.metric("R²", f"{r['R2']:.4f}")
+            with col3: st.metric("MAE", f"${r['MAE']:.2f}")
+            with col4: st.metric("RMSE", f"${r['RMSE']:.2f}")
+
+            # Scatter plot
+            fig = px.scatter(x=y_test, y=pred, labels={'x': 'Actual', 'y': 'Predicted'},
+                             title=f"{model_choice}: Actual vs Predicted")
+            fig.add_trace(go.Scatter(x=[0, y_test.max()], y=[0, y_test.max()], mode='lines',
+                                     line=dict(color='red', dash='dash'), name='Perfect'))
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Residuals
+            fig2 = px.histogram(x=y_test - pred, nbins=50, title="Residual Distribution",
+                                labels={'x': 'Error ($)'})
+            st.plotly_chart(fig2, use_container_width=True)
+
+# ============================================================================
+# TAB 7: PREDICTION
+# ============================================================================
+with tabs[6]:
+    st.header("7️⃣ Make Predictions")
+
+    if not st.session_state.trained_models:
+        st.warning("⚠️ Train models first!")
+    else:
+        # Select model
+        models_available = list(st.session_state.trained_models.keys())
+
+        # Sort by accuracy
+        if st.session_state.model_results:
+            models_available = sorted(
+                models_available,
+                key=lambda x: st.session_state.model_results.get(x, {}).get('R2', 0),
+                reverse=True
+            )
+
+        selected_model = st.selectbox("🎯 Select Model for Prediction:", models_available)
+
+        if selected_model:
+            r = st.session_state.model_results[selected_model]
+            st.success(f"✅ {selected_model}: {r['Accuracy']:.2f}% accuracy")
+
+            if st.button("🔮 Predict on Test Data", type="primary", use_container_width=True):
+                model_info = st.session_state.trained_models[selected_model]
+                model = model_info['model']
+                needs_scale = model_info['needs_scale']
+
+                X_test = st.session_state.X_test_scaled if needs_scale else st.session_state.X_test
+                y_test = st.session_state.y_test
+
+                predictions = model.predict(X_test)
+
+                results_df = pd.DataFrame({
+                    'Actual': y_test.values,
+                    'Predicted': predictions.round(2),
+                    'Error': (y_test.values - predictions).round(2),
+                    'Abs_Error': np.abs(y_test.values - predictions).round(2)
+                })
+
+                col1, col2, col3, col4 = st.columns(4)
+                with col1: st.metric("Samples", f"{len(results_df):,}")
+                with col2: st.metric("Avg Predicted", f"${predictions.mean():.2f}")
+                with col3: st.metric("Avg Actual", f"${y_test.mean():.2f}")
+                with col4: st.metric("Avg Error", f"${results_df['Abs_Error'].mean():.2f}")
+
+                st.dataframe(results_df.head(100), use_container_width=True)
+
+                st.download_button(
+                    "📥 Download Predictions",
+                    results_df.to_csv(index=False),
+                    f"predictions_{selected_model.replace(' ', '_')}.csv",
+                    use_container_width=True
+                )
+
+# Footer
+st.markdown("---")
+st.markdown(f"""
+<div style='text-align:center;color:gray'>
+🏠 Airbnb ML Studio | {len(ALL_MODELS)} Models Available |
+XGBoost: {'✅' if HAS_XGB else '❌'} |
+LightGBM: {'✅' if HAS_LGB else '❌'} |
+CatBoost: {'✅' if HAS_CAT else '❌'}
+</div>
+""", unsafe_allow_html=True)
